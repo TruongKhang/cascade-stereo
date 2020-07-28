@@ -290,6 +290,7 @@ if __name__ == '__main__':
 
     if args.resume:
         assert args.mode == "train"
+        print(args.loadckpt)
         assert args.loadckpt is None
     if args.testpath is None:
         args.testpath = args.trainpath
