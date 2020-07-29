@@ -7,9 +7,9 @@ clc
 % for all included scans (UsedSets)
 
 % modify the path to evaluate your models
-dataPath='../../data/DTU/SampleSet/MVS Data/';
-pred_results='cascade_hr/48-32-8_4-2-1_dlossw-0.5-1.0-2.0_chs888/gipuma_4_0.9/';
-resultsPath=['../../outputs/1101/dtu/' pred_results  '/eval_out/'];
+dataPath='/home/khangtg/Documents/lab/mvs/dataset/mvs/SampleSet/MVS Data/';
+pred_results='';
+resultsPath=['../../outputs/' pred_results  '/eval_out/'];
 
 MaxDist=20; %outlier thresshold of 20 mm
 
