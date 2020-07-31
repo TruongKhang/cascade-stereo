@@ -327,6 +327,122 @@ def homo_warping(src_fea, src_proj, ref_proj, depth_values):
 
     return warped_src_fea
 
+
+def resample_vol(src_vol, src_proj, ref_proj, depth_values):
+    # src_vol: [B, Ndepth, H, W]
+    # src_proj: [B, 4, 4]
+    # ref_proj: [B, 4, 4]
+    # depth_values: [B, Ndepth] o [B, Ndepth, H, W]
+    # out: [B, Ndepth, H, W]
+    batch = src_vol.shape[0]
+    num_depth = depth_values.shape[1]
+    height, width = src_vol.shape[2], src_vol.shape[3]
+
+    depth_min = float(depth_values[0, 0].cpu().numpy())
+    depth_max = float(depth_values[0, -1].cpu().numpy())
+    depth_half = (depth_max + depth_min) * .5
+    depth_radius = (depth_max - depth_min) * .5
+
+    with torch.no_grad():
+        proj = torch.matmul(src_proj, torch.inverse(ref_proj))
+        rot = proj[:, :3, :3]  # [B,3,3]
+        trans = proj[:, :3, 3:4]  # [B,3,1]
+
+        y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=src_vol.device),
+                               torch.arange(0, width, dtype=torch.float32, device=src_vol.device)])
+        y, x = y.contiguous(), x.contiguous()
+        y, x = y.view(height * width), x.view(height * width)
+        xyz = torch.stack((x, y, torch.ones_like(x)))  # [3, H*W]
+        xyz = torch.unsqueeze(xyz, 0).repeat(batch, 1, 1)
+        # [B, 3, H*W]
+        rot_xyz = torch.matmul(rot, xyz)  # [B, 3, H*W]
+        rot_depth_xyz = rot_xyz.unsqueeze(2).repeat(1, 1, num_depth, 1) * depth_values.view(batch, 1, num_depth,
+                                                                                            -1)  # [B, 3, Ndepth, H*W]
+        proj_xyz = rot_depth_xyz + trans.view(batch, 3, 1, 1)  # [B, 3, Ndepth, H*W]
+        proj_xy = proj_xyz[:, :2, :, :] / proj_xyz[:, 2:3, :, :]  # [B, 2, Ndepth, H*W]
+        proj_x_normalized = proj_xy[:, 0, :, :] / ((width - 1) / 2) - 1
+        proj_y_normalized = proj_xy[:, 1, :, :] / ((height - 1) / 2) - 1
+        proj_z_normalized = (proj_xyz[:, 2, :, :] - depth_half) / depth_radius  # [B, Ndepth, H*W]
+        proj_xyz_normalized = torch.stack((proj_x_normalized, proj_y_normalized, proj_z_normalized), dim=3)  # [B, Ndepth, H*W, 3]
+        grid = proj_xyz_normalized
+
+    warped_src_vol = F.grid_sample(src_vol.unsqueeze(1), grid.view(batch, num_depth, height, width, 3),
+                                   mode='bilinear',
+                                   padding_mode='border')
+    warped_src_vol = warped_src_vol.view(batch, num_depth, height, width)
+
+    return warped_src_vol
+
+
+# def resample_vol_cuda(src_vol, src_proj, ref_proj, cam_intrinsic=None,
+#                       d_candi=None, d_candi_new=None,
+#                       padding_value=0., output_tensor=False,
+#                       is_debug=False, PointsDs_ref_cam_coord_in=None):
+#     r'''
+#
+#     if d_candi_new is not None:
+#     d_candi : candidate depth values for the src view;
+#     d_candi_new : candidate depth values for the ref view. Usually d_candi_new is different from d_candi
+#     '''
+#     assert d_candi is not None, 'd_candi should be some np.array object'
+#
+#     N, D, H, W = src_vol.shape
+#     N = 1
+#     hhfov, hvfov = \
+#             math.radians(cam_intrinsic['hfov']) * .5, math.radians(cam_intrinsic['vfov']) * .5
+#
+#     # --- 0. Get the sampled points in the ref. view --- #
+#     if PointsDs_ref_cam_coord_in is None:
+#         PointsDs_ref_cam_coord = torch.zeros(N, D, H, W, 3)
+#         if d_candi_new is not None:
+#             d_candi_ = d_candi_new
+#         else:
+#             d_candi_ = d_candi
+#
+#         for idx_d, d in enumerate(d_candi_):
+#             PointsDs_ref_cam_coord[0, idx_d, :, :, :] \
+#                     = d * torch.FloatTensor(cam_intrinsic['unit_ray_array'])
+#         PointsDs_ref_cam_coord = PointsDs_ref_cam_coord.cuda(0)
+#     else:
+#         PointsDs_ref_cam_coord = PointsDs_ref_cam_coord_in
+#
+#     if d_candi_new is not None:
+#         z_max, z_min = d_candi.max(), d_candi.min()
+#     else:
+#         z_max = torch.max(PointsDs_ref_cam_coord[0, :, :, :, 2])
+#         z_min = torch.min(PointsDs_ref_cam_coord[0, :, :, :, 2])
+#
+#     z_half = (z_max + z_min) * .5
+#     z_radius = (z_max - z_min) * .5
+#
+#     # --- 1. Coordinate transform --- #
+#     PointsDs_ref_cam_coord = PointsDs_ref_cam_coord.reshape((-1, 3)).transpose(0,1)
+#     PointsDs_ref_cam_coord = torch.cat((PointsDs_ref_cam_coord, torch.ones(1, PointsDs_ref_cam_coord.shape[1]).cuda(0)), dim=0)
+#
+#     src_cam_extM = rel_extM
+#     PointsDs_src_cam_coord = src_cam_extM.matmul(PointsDs_ref_cam_coord)
+#
+#     # transform into range [-1, 1] for all dimensions #
+#     PointsDs_src_cam_coord[0, :] = PointsDs_src_cam_coord[0,:] / (PointsDs_src_cam_coord[2,:] +1e-10) / math.tan( hhfov)
+#     PointsDs_src_cam_coord[1, :] = PointsDs_src_cam_coord[1,:] / (PointsDs_src_cam_coord[2,:] +1e-10) / math.tan( hvfov)
+#     PointsDs_src_cam_coord[2, :] = (PointsDs_src_cam_coord[2,:] -  z_half ) / z_radius
+#
+#     # reshape to N x OD x OH x OW x 3 #
+#     PointsDs_src_cam_coord = PointsDs_src_cam_coord / (PointsDs_src_cam_coord[3,:].unsqueeze_(0) + 1e-10 )
+#     PointsDs_src_cam_coord = PointsDs_src_cam_coord[:3, :].transpose(0,1).reshape((N, D, H, W, 3))
+#
+#     # --- 2. Re-sample --- #
+#     src_vol_th = src_vol.unsqueeze(1)
+#     src_vol_th_ = _set_vol_border(src_vol_th, padding_value)
+#     res_vol_th = torch.squeeze(torch.squeeze(
+#         F.grid_sample(src_vol_th_, PointsDs_src_cam_coord, mode='bilinear', padding_mode='border'), dim=0), dim=0)
+#
+#     if is_debug:
+#         return res_vol_th, PointsDs_src_cam_coord, src_vol_th
+#     else:
+#         return res_vol_th
+
+
 class DeConv2dFuse(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, relu=True, bn=True,
                  bn_momentum=0.1):

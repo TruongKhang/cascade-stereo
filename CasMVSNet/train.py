@@ -62,6 +62,7 @@ parser.add_argument('--loss-scale', type=str, default=None)
 num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
 is_distributed = num_gpus > 1
 
+
 # main function
 def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epoch, args):
     milestones = [len(TrainImgLoader) * int(epoch_idx) for epoch_idx in args.lrepochs.split(':')[0].split(',')]
@@ -250,7 +251,7 @@ def profile():
         torch.cuda.synchronize()
         torch.cuda.synchronize()
         start_time = time.perf_counter()
-        test_sample(next(iter_dataloader), detailed_summary=True)
+        # test_sample(next(iter_dataloader), detailed_summary=True)
         torch.cuda.synchronize()
         end_time = time.perf_counter()
         return end_time - start_time
@@ -378,26 +379,33 @@ if __name__ == '__main__':
 
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
-    train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 3, args.numdepth, args.interval_scale)
-    test_dataset = MVSDataset(args.testpath, args.testlist, "test", 5, args.numdepth, args.interval_scale)
-
-    if is_distributed:
-        train_sampler = torch.utils.data.DistributedSampler(train_dataset, num_replicas=dist.get_world_size(),
-                                                            rank=dist.get_rank())
-        test_sampler = torch.utils.data.DistributedSampler(test_dataset, num_replicas=dist.get_world_size(),
-                                                           rank=dist.get_rank())
-
-        TrainImgLoader = DataLoader(train_dataset, args.batch_size, sampler=train_sampler, num_workers=1,
-                                    drop_last=True,
-                                    pin_memory=args.pin_m)
-        TestImgLoader = DataLoader(test_dataset, args.batch_size, sampler=test_sampler, num_workers=1, drop_last=False,
-                                   pin_memory=args.pin_m)
-    else:
-        TrainImgLoader = DataLoader(train_dataset, args.batch_size, shuffle=True, num_workers=1, drop_last=True,
-                                    pin_memory=args.pin_m)
-        TestImgLoader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=1, drop_last=False,
-                                   pin_memory=args.pin_m)
-
+    train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 5, args.numdepth, args.interval_scale,
+                               shuffle=True, seq_size=49, batch_size=args.batch_size)
+    test_dataset = MVSDataset(args.testpath, args.testlist, "val", 5, args.numdepth, args.interval_scale,
+                              shuffle=False, seq_size=49, batch_size=1)
+    #
+    # if is_distributed:
+    #     train_sampler = torch.utils.data.DistributedSampler(train_dataset, num_replicas=dist.get_world_size(),
+    #                                                         rank=dist.get_rank())
+    #     test_sampler = torch.utils.data.DistributedSampler(test_dataset, num_replicas=dist.get_world_size(),
+    #                                                        rank=dist.get_rank())
+    #
+    #     TrainImgLoader = DataLoader(train_dataset, args.batch_size, sampler=train_sampler, num_workers=1,
+    #                                 drop_last=True,
+    #                                 pin_memory=args.pin_m)
+    #     TestImgLoader = DataLoader(test_dataset, args.batch_size, sampler=test_sampler, num_workers=1, drop_last=False,
+    #                                pin_memory=args.pin_m)
+    # else:
+        # TrainImgLoader = DataLoader(train_dataset, args.batch_size, shuffle=True, num_workers=1, drop_last=True,
+        #                             pin_memory=args.pin_m)
+        # TestImgLoader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=1, drop_last=False,
+        #                            pin_memory=args.pin_m)
+    train_sampler = torch.utils.data.SequentialSampler(train_dataset)
+    TrainImgLoader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, sampler=train_sampler,
+                                num_workers=4, pin_memory=args.pin_m)
+    test_sampler = torch.utils.data.SequentialSampler(test_dataset)
+    TestImgLoader = DataLoader(test_dataset, batch_size=1, shuffle=False, sampler=test_sampler, num_workers=2,
+                               pin_memory=args.pin_m)
 
     if args.mode == "train":
         train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epoch, args)

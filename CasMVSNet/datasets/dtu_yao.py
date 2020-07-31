@@ -4,6 +4,7 @@ import os, cv2, time, math
 from PIL import Image
 from datasets.data_io import *
 
+
 # the DTU dataset preprocessed by Yao Yao (only for training)
 class MVSDataset(Dataset):
     def __init__(self, datapath, listfile, mode, nviews, ndepths=192, interval_scale=1.06, **kwargs):
@@ -20,8 +21,27 @@ class MVSDataset(Dataset):
         assert self.mode in ["train", "val", "test"]
         self.metas = self.build_list()
 
+        self.generate_img_index = []
+        self.list_begin = []
+        self.spliter = []
+        total_imgs = 0
+        keys = sorted(list(self.metas.keys()))
+        for name in keys:
+            num_imgs = len(self.metas[name])
+            total_imgs += num_imgs
+            # print(name, num_imgs, seq_size)
+            if (self.mode == 'train') and (self.kwargs['seq_size'] is not None):
+                indices = np.arange(num_imgs)
+                for ptr in range(0, num_imgs, self.kwargs['seq_size']):
+                    self.spliter.append((name, indices[ptr:(ptr + self.kwargs['seq_size'])]))
+            else:
+                self.spliter.append((name, np.arange(num_imgs)))
+        print("dataset", self.mode, "metas:", total_imgs)
+
+        self.generate_indices()
+
     def build_list(self):
-        metas = []
+        metas = {}
         with open(self.listfile) as f:
             scans = f.readlines()
             scans = [line.rstrip() for line in scans]
@@ -35,15 +55,29 @@ class MVSDataset(Dataset):
                 # viewpoints (49)
                 for view_idx in range(num_viewpoint):
                     ref_view = int(f.readline().rstrip())
-                    src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+                    if ref_view < (self.nviews - 1) // 2:
+                        left = 0
+                    else:
+                        left = ref_view - (self.nviews - 1) // 2
+                    if (left + self.nviews) > num_viewpoint:
+                        left = num_viewpoint - self.nviews
+                    # src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
+                    src_views = [x for x in range(left, left+self.nviews) if x != ref_view]
                     # light conditions 0-6
+                    # for light_idx in range(7):
+                    #     metas.append((scan, light_idx, ref_view, src_views))
                     for light_idx in range(7):
-                        metas.append((scan, light_idx, ref_view, src_views))
-        print("dataset", self.mode, "metas:", len(metas))
+                        key = '%s_%s' % (scan, light_idx)
+                        if scan not in metas:
+                            metas[key] = [(ref_view, src_views)]
+                        else:
+                            metas[key].append((ref_view, src_views))
+        # print("dataset", self.mode, "metas:", len(metas))
         return metas
 
     def __len__(self):
-        return len(self.metas)
+        return len(self.generate_img_index)
+        # return len(self.metas)
 
     def read_cam_file(self, filename):
         with open(filename) as f:
@@ -113,11 +147,61 @@ class MVSDataset(Dataset):
         }
         return depth_lr_ms
 
+    def generate_indices(self):
+        self.generate_img_index = []
+        self.list_begin = []
+        batch_size = self.kwargs['batch_size']
+
+        if self.kwargs['shuffle']:
+            random.shuffle(self.spliter)
+
+        if self.mode == 'train':
+            idx = batch_size - 1
+            batch_ptrs = list(range(batch_size))
+            id_ptrs = np.zeros(batch_size, dtype=np.uint8)
+            # batch_crop_coords = [(np.random.choice(range_h), np.random.choice(range_w)) for i in range(self.batch_size)]
+            while idx < len(self.spliter):
+                for i in range(len(batch_ptrs)):
+                    if id_ptrs[i] == 0:
+                        self.list_begin.append(True)
+                    else:
+                        self.list_begin.append(False)
+                    name, id_data = self.spliter[batch_ptrs[i]]
+                    self.generate_img_index.append((name, id_data[id_ptrs[i]]))
+                    # self.list_crop_coords.append(batch_crop_coords[i])
+                    id_ptrs[i] += 1
+                    if id_ptrs[i] >= len(id_data):
+                        idx += 1
+                        batch_ptrs[i] = idx
+                        id_ptrs[i] = 0
+                        # batch_crop_coords[i] = (np.random.choice(range_h), np.random.choice(range_w))
+                    if idx >= len(self.spliter):
+                        if i < len(batch_ptrs) - 1:
+                            self.generate_img_index = self.generate_img_index[:-(i + 1)]
+                            self.list_begin = self.list_begin[:-(i + 1)]
+                            # self.list_crop_coords = self.list_crop_coords[:-(i + 1)]
+                        break
+        else:
+            for ptr in range(len(self.spliter)):
+                name, indices = self.spliter[ptr]
+                for i, idx in enumerate(indices):
+                    self.generate_img_index.append((name, idx))
+                    if i == 0:
+                        self.list_begin.append(True)
+                    else:
+                        self.list_begin.append(False)
+
+        # print("Number samples of %s dataset: " % self.mode, len(self.generate_img_index))
+
     def __getitem__(self, idx):
-        meta = self.metas[idx]
-        scan, light_idx, ref_view, src_views = meta
+        # meta = self.metas[idx]
+        # scan, light_idx, ref_view, src_views = meta
+        key, real_idx = self.generate_img_index[idx]
+        scan, light_idx = key.split('_')[0], int(key.split('_')[1])
+        ref_view, src_views = self.metas[key][real_idx]
         # use only the reference view and first nviews-1 source views
-        view_ids = [ref_view] + src_views[:self.nviews - 1]
+
+        view_ids = [ref_view] + src_views
 
         imgs = []
         mask = None
@@ -134,11 +218,9 @@ class MVSDataset(Dataset):
 
             proj_mat_filename = os.path.join(self.datapath, 'Cameras/train/{:0>8}_cam.txt').format(vid)
 
-
             img = self.read_img(img_filename)
 
             intrinsics, extrinsics, depth_min, depth_interval = self.read_cam_file(proj_mat_filename)
-
 
             proj_mat = np.zeros(shape=(2, 4, 4), dtype=np.float32)  #
             proj_mat[0, :4, :4] = extrinsics
@@ -177,4 +259,5 @@ class MVSDataset(Dataset):
                 "proj_matrices": proj_matrices_ms,
                 "depth": depth_ms,
                 "depth_values": depth_values,
-                "mask": mask }
+                "mask": mask,
+                "is_begin": self.list_begin[idx]}
