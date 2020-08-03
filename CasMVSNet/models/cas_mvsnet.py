@@ -9,7 +9,8 @@ class DepthNet(nn.Module):
     def __init__(self):
         super(DepthNet, self).__init__()
 
-    def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None):
+    def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
+                prev_costvol=None):
         proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
@@ -63,7 +64,18 @@ class DepthNet(nn.Module):
             depth_index = depth_index.clamp(min=0, max=num_depth-1)
             photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
 
-        return {"depth": depth,  "photometric_confidence": photometric_confidence}
+        prev_depth = depth_regression(prev_costvol, depth_values=depth_values)
+        prev_prob_volume_sum4 = 4 * F.avg_pool3d(F.pad(prev_costvol.unsqueeze(1), pad=(0, 0, 0, 0, 1, 2)), (4, 1, 1),
+                                                 stride=1, padding=0).squeeze(1)
+        depth_index = depth_regression(prev_costvol, depth_values=torch.arange(num_depth, device=prev_costvol.device,
+                                                                              dtype=torch.float)).long()
+        depth_index = depth_index.clamp(min=0, max=num_depth - 1)
+        prev_confidence = torch.gather(prev_prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
+        final_depth = depth * photometric_confidence + prev_depth * prev_confidence
+        final_confidence = (photometric_confidence + prev_confidence) / 2
+        return {"depth": final_depth, "photometric_confidence": final_confidence}
+
+        # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
 
 class CascadeMVSNet(nn.Module):
@@ -106,7 +118,7 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
         self.DepthNet = DepthNet()
 
-    def forward(self, imgs, proj_matrices, depth_values):
+    def forward(self, imgs, proj_matrices, depth_values, prev_costvol=None):
         depth_min = float(depth_values[0, 0].cpu().numpy())
         depth_max = float(depth_values[0, -1].cpu().numpy())
         depth_interval = (depth_max - depth_min) / depth_values.size(1)
@@ -125,6 +137,8 @@ class CascadeMVSNet(nn.Module):
             features_stage = [feat["stage{}".format(stage_idx + 1)] for feat in features]
             proj_matrices_stage = proj_matrices["stage{}".format(stage_idx + 1)]
             stage_scale = self.stage_infos["stage{}".format(stage_idx + 1)]["scale"]
+            # edit by Khang
+            prev_costvol_stage = prev_costvol["stage{}".format(stage_idx + 1)]
 
             if depth is not None:
                 if self.grad_method == "detach":
@@ -150,7 +164,8 @@ class CascadeMVSNet(nn.Module):
                                                                      [self.ndepths[stage_idx], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)], mode='trilinear',
                                                                      align_corners=Align_Corners_Range).squeeze(1),
                                           num_depth=self.ndepths[stage_idx],
-                                          cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx])
+                                          cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
+                                          prev_costvol=prev_costvol_stage)
 
             depth = outputs_stage['depth']
 

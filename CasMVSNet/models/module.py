@@ -345,6 +345,7 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values):
 
     with torch.no_grad():
         proj = torch.matmul(src_proj, torch.inverse(ref_proj))
+        print(proj.size())
         rot = proj[:, :3, :3]  # [B,3,3]
         trans = proj[:, :3, 3:4]  # [B,3,1]
 
