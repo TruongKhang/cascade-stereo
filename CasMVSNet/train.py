@@ -13,6 +13,7 @@ from models.module import resample_vol
 import torch.distributed as dist
 
 cudnn.benchmark = True
+torch.autograd.set_detect_anomaly(True)
 
 parser = argparse.ArgumentParser(description='A PyTorch Implementation of Cascade Cost Volume MVSNet')
 parser.add_argument('--mode', default='train', help='train or test', choices=['train', 'test', 'profile'])
