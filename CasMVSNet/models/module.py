@@ -338,14 +338,15 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values):
     num_depth = depth_values.shape[1]
     height, width = src_vol.shape[2], src_vol.shape[3]
 
-    depth_min = float(depth_values[0, 0].cpu().numpy())
-    depth_max = float(depth_values[0, -1].cpu().numpy())
+    depth_min = depth_values[:, 0] # [B, H, W]
+    depth_max = depth_values[:, -1] # [B, H, W]
     depth_half = (depth_max + depth_min) * .5
     depth_radius = (depth_max - depth_min) * .5
+    depth_half, depth_radius = depth_half.view(batch, 1, -1), depth_radius.view(batch, 1, -1)
 
     with torch.no_grad():
         proj = torch.matmul(src_proj, torch.inverse(ref_proj))
-        print(proj.size())
+        # print(proj.size())
         rot = proj[:, :3, :3]  # [B,3,3]
         trans = proj[:, :3, 3:4]  # [B,3,1]
 
@@ -372,7 +373,7 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values):
                                    padding_mode='border')
     warped_src_vol = warped_src_vol.view(batch, num_depth, height, width)
 
-    return warped_src_vol
+    return F.softmax(warped_src_vol, dim=1)
 
 
 # def resample_vol_cuda(src_vol, src_proj, ref_proj, cam_intrinsic=None,

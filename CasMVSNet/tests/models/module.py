@@ -31,6 +31,7 @@ class TestWarpingVolume(unittest.TestCase):
         depth_max = depth_min + num_depth * depth_interval
         depth_values = np.arange(depth_min, depth_max, depth_interval, dtype=np.float32)
         depth_values = torch.tensor(depth_values).unsqueeze(0).repeat(batch_size, 1)
+        depth_values = depth_values.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, height, width)
 
         src_vol = torch.rand(batch_size, num_depth, height, width)
         src_vol = F.softmax(src_vol, dim=1)

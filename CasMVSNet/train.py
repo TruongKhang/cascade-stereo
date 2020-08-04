@@ -9,6 +9,7 @@ from tensorboardX import SummaryWriter
 from datasets import find_dataset_def
 from models import *
 from utils import *
+from models.module import resample_vol
 import torch.distributed as dist
 
 cudnn.benchmark = True
@@ -74,12 +75,43 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
         print('Epoch {}:'.format(epoch_idx))
         global_step = len(TrainImgLoader) * epoch_idx
 
+        itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
+        prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
+        TrainImgLoader.dataset.generate_indices()
         # training
         for batch_idx, sample in enumerate(TrainImgLoader):
             start_time = time.time()
             global_step = len(TrainImgLoader) * epoch_idx + batch_idx
             do_summary = global_step % args.summary_freq == 0
-            loss, scalar_outputs, image_outputs = train_sample(model, model_loss, optimizer, sample, args)
+
+            # modified from the original by Khang
+            sample = tocuda(sample)
+            proj_matrices = sample['proj_matrices']
+            is_begin = sample['is_begin'].type(torch.uint8)
+            ref_matrices = {}
+            for stage in proj_matrices.keys():
+                ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
+                ref_proj_new = ref_proj_stage[:, 0].clone()
+                ref_proj_new[:, :3, :4] = torch.matmul(ref_proj_stage[:, 1, :3, :3], ref_proj_stage[:, 0, :3, :4])
+                if prev_proj_matrices[stage] is None:
+                    prev_proj_matrices[stage] = ref_proj_new
+                else:
+                    prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
+                ref_matrices[stage] = ref_proj_new
+                D = sample['depth_values'].size(1)
+                if itg_state[stage] is None:
+                    B, H, W = sample['depth'][stage].size()
+                    itg_state[stage] = torch.ones((B, D, H, W), dtype=torch.float32) / D
+                else:
+                    itg_state[stage][is_begin] = 1.0 / D
+
+            loss, scalar_outputs, image_outputs, itg_vol = train_sample(model, model_loss, optimizer, sample,
+                                                                        (prev_proj_matrices, itg_state), args)
+
+            prev_proj_matrices = ref_matrices
+            for stage in itg_state.keys():
+                itg_state[stage] = itg_vol[stage].detach()
+
             lr_scheduler.step()
             if (not is_distributed) or (dist.get_rank() == 0):
                 if do_summary:
@@ -110,7 +142,35 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                 start_time = time.time()
                 global_step = len(TrainImgLoader) * epoch_idx + batch_idx
                 do_summary = global_step % args.summary_freq == 0
-                loss, scalar_outputs, image_outputs = test_sample_depth(model, model_loss, sample, args)
+
+                # modified from the original by Khang
+                sample = tocuda(sample)
+                proj_matrices = sample['proj_matrices']
+                is_begin = sample['is_begin'].type(torch.uint8)
+                ref_matrices = {}
+                for stage in proj_matrices.keys():
+                    ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
+                    ref_proj_new = ref_proj_stage[:, 0].clone()
+                    ref_proj_new[:, :3, :4] = torch.matmul(ref_proj_stage[:, 1, :3, :3], ref_proj_stage[:, 0, :3, :4])
+                    if prev_proj_matrices[stage] is None:
+                        prev_proj_matrices[stage] = ref_proj_new
+                    else:
+                        prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
+                    ref_matrices[stage] = ref_proj_new
+                    D = sample['depth_values'].size(1)
+                    if itg_state[stage] is None:
+                        B, H, W = sample['depth'][stage].size()
+                        itg_state[stage] = torch.ones((B, D, H, W), dtype=torch.float32) / D
+                    else:
+                        itg_state[stage][is_begin] = 1.0 / D
+
+                loss, scalar_outputs, image_outputs, itg_vol = test_sample_depth(model, model_loss, sample,
+                                                                                 (prev_proj_matrices, itg_state), args)
+
+                prev_proj_matrices = ref_matrices
+                for stage in itg_state.keys():
+                    itg_state[stage] = itg_vol[stage].detach()
+
                 if (not is_distributed) or (dist.get_rank() == 0):
                     if do_summary:
                         save_scalars(logger, 'test', scalar_outputs, global_step)
@@ -146,11 +206,11 @@ def test(model, model_loss, TestImgLoader, args):
         print("final", avg_test_scalars.mean())
 
 
-def train_sample(model, model_loss, optimizer, sample, args):
+def train_sample(model, model_loss, optimizer, sample_cuda, prev_state, args):
     model.train()
     optimizer.zero_grad()
 
-    sample_cuda = tocuda(sample)
+    # sample_cuda = tocuda(sample)
     depth_gt_ms = sample_cuda["depth"]
     mask_ms = sample_cuda["mask"]
 
@@ -158,7 +218,10 @@ def train_sample(model, model_loss, optimizer, sample, args):
     depth_gt = depth_gt_ms["stage{}".format(num_stage)]
     mask = mask_ms["stage{}".format(num_stage)]
 
-    outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"])
+    # prev_ref_matrices, itg_vol = prev_state
+
+    outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
+                    prev_state)
     depth_est = outputs["depth"]
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms, dlossw=[float(e) for e in args.dlossw.split(",") if e])
@@ -180,27 +243,28 @@ def train_sample(model, model_loss, optimizer, sample, args):
 
     image_outputs = {"depth_est": depth_est * mask,
                      "depth_est_nomask": depth_est,
-                     "depth_gt": sample["depth"]["stage1"],
-                     "ref_img": sample["imgs"][:, 0],
-                     "mask": sample["mask"]["stage1"],
+                     "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
+                     "ref_img": sample_cuda["imgs"][:, 0].cpu(),
+                     "mask": sample_cuda["mask"]["stage1"].cpu(),
                      "errormap": (depth_est - depth_gt).abs() * mask,
                      }
+    prob_vols = {stage: outputs[stage]['prob_volume'] for stage in outputs.keys() if 'stage' in stage}
 
     if is_distributed:
         scalar_outputs = reduce_scalar_outputs(scalar_outputs)
 
-    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs)
+    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), prob_vols
 
 
 @make_nograd_func
-def test_sample_depth(model, model_loss, sample, args):
+def test_sample_depth(model, model_loss, sample_cuda, prev_state, args):
     if is_distributed:
         model_eval = model.module
     else:
         model_eval = model
     model_eval.eval()
 
-    sample_cuda = tocuda(sample)
+    # sample_cuda = tocuda(sample)
     depth_gt_ms = sample_cuda["depth"]
     mask_ms = sample_cuda["mask"]
 
@@ -208,7 +272,7 @@ def test_sample_depth(model, model_loss, sample, args):
     depth_gt = depth_gt_ms["stage{}".format(num_stage)]
     mask = mask_ms["stage{}".format(num_stage)]
 
-    outputs = model_eval(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"])
+    outputs = model_eval(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"], prev_state)
     depth_est = outputs["depth"]
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms, dlossw=[float(e) for e in args.dlossw.split(",") if e])
@@ -232,15 +296,18 @@ def test_sample_depth(model, model_loss, sample, args):
 
     image_outputs = {"depth_est": depth_est * mask,
                      "depth_est_nomask": depth_est,
-                     "depth_gt": sample["depth"]["stage1"],
-                     "ref_img": sample["imgs"][:, 0],
-                     "mask": sample["mask"]["stage1"],
+                     "depth_gt": sample_cuda["depth"]["stage1"].cpu(),
+                     "ref_img": sample_cuda["imgs"][:, 0].cpu(),
+                     "mask": sample_cuda["mask"]["stage1"].cpu(),
                      "errormap": (depth_est - depth_gt).abs() * mask}
+
+    prob_vols = {stage: outputs[stage]['prob_volume'] for stage in outputs.keys() if 'stage' in stage}
 
     if is_distributed:
         scalar_outputs = reduce_scalar_outputs(scalar_outputs)
 
-    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs)
+    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), prob_vols
+
 
 def profile():
     warmup_iter = 5
