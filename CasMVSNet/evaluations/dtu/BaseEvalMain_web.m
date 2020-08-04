@@ -5,9 +5,9 @@ clc
 
 % script to calculate distances have been measured for all included scans (UsedSets)
 
-dataPath='../../data/DTU/SampleSet/MVS Data/';
-pred_results='cascade_hr/48-32-8_4-2-1_dlossw-0.5-1.0-2.0_chs888/gipuma_4_0.9/';
-plyPath=['../../outputs/1101/dtu/' pred_results];
+dataPath='/home/khangtg/Documents/lab/mvs/dataset/mvs/SampleSet/MVS Data/';
+pred_results='';
+plyPath=['../../outputs/' pred_results];
 resultsPath=[plyPath '/eval_out/'];
 disp(resultsPath);
 mkdir(resultsPath);

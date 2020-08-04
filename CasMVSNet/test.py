@@ -144,33 +144,21 @@ def write_cam(file, cam):
 
     f.close()
 
+
 def save_depth(testlist):
-    # model
-    """model = CascadeMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
-                          depth_interals_ratio=[float(d_i) for d_i in args.depth_inter_r.split(",") if d_i],
-                          share_cr=args.share_cr,
-                          cr_base_chs=[int(ch) for ch in args.cr_base_chs.split(",") if ch],
-                          grad_method=args.grad_method)
-
-    # load checkpoint file specified by args.loadckpt
-    print("loading model {}".format(args.loadckpt))
-    state_dict = torch.load(args.loadckpt, map_location=torch.device("cpu"))
-    model.load_state_dict(state_dict['model'], strict=True)
-    model = nn.DataParallel(model)
-    model.cuda()
-    model.eval()"""
-
     for scene in testlist:
-        save_scene_depth([scene]) #, model)
+        save_scene_depth([scene])
+
 
 # run CasMVS model to save depth maps and confidence maps
-def save_scene_depth(testlist): #, model):
+def save_scene_depth(testlist):
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
     test_dataset = MVSDataset(args.testpath, testlist, "test", args.num_view, args.numdepth, Interval_Scale,
                               max_h=args.max_h, max_w=args.max_w, fix_res=args.fix_res)
     TestImgLoader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=4, drop_last=False)
 
+    # model
     model = CascadeMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
                           depth_interals_ratio=[float(d_i) for d_i in args.depth_inter_r.split(",") if d_i],
                           share_cr=args.share_cr,
