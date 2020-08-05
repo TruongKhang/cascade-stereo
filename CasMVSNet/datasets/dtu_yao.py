@@ -4,6 +4,7 @@ import os, cv2, time, math
 from PIL import Image
 from datasets.data_io import *
 
+np.random.seed(123)
 
 # the DTU dataset preprocessed by Yao Yao (only for training)
 class MVSDataset(Dataset):

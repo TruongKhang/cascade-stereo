@@ -12,8 +12,10 @@ from utils import *
 from models.module import resample_vol
 import torch.distributed as dist
 
+SEED = 123
+torch.manual_seed(SEED)
 cudnn.benchmark = True
-torch.autograd.set_detect_anomaly(True)
+cudnn.deterministic = True
 
 parser = argparse.ArgumentParser(description='A PyTorch Implementation of Cascade Cost Volume MVSNet')
 parser.add_argument('--mode', default='train', help='train or test', choices=['train', 'test', 'profile'])
@@ -137,6 +139,8 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
         gc.collect()
 
         # testing
+        itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
+        prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
         if (epoch_idx % args.eval_freq == 0) or (epoch_idx == args.epochs - 1):
             avg_test_scalars = DictAverageMeter()
             for batch_idx, sample in enumerate(TestImgLoader):
