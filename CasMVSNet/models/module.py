@@ -373,7 +373,7 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values):
                                    padding_mode='border')
     warped_src_vol = warped_src_vol.view(batch, num_depth, height, width)
 
-    return F.softmax(warped_src_vol, dim=1)
+    return warped_src_vol.clamp(min=-1000., max=0) #F.softmax(warped_src_vol, dim=1)
 
 
 # def resample_vol_cuda(src_vol, src_proj, ref_proj, cam_intrinsic=None,

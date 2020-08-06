@@ -104,9 +104,9 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                 D = sample['depth_values'].size(1)
                 if itg_state[stage] is None:
                     B, H, W = sample['depth'][stage].size()
-                    itg_state[stage] = torch.ones((B, D, H, W), dtype=torch.float32) / D
+                    itg_state[stage] = torch.zeros((B, D, H, W), dtype=torch.float32) # / D
                 else:
-                    itg_state[stage][is_begin] = 1.0 / D
+                    itg_state[stage][is_begin] = 0 #1.0 / D
 
             loss, scalar_outputs, image_outputs, itg_vol = train_sample(model, model_loss, optimizer, sample,
                                                                         (prev_proj_matrices, itg_state), args)
@@ -145,7 +145,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
             avg_test_scalars = DictAverageMeter()
             for batch_idx, sample in enumerate(TestImgLoader):
                 start_time = time.time()
-                global_step = len(TrainImgLoader) * epoch_idx + batch_idx
+                global_step = len(TestImgLoader) * epoch_idx + batch_idx
                 do_summary = global_step % args.summary_freq == 0
 
                 # modified from the original by Khang
@@ -165,9 +165,9 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                     D = sample['depth_values'].size(1)
                     if itg_state[stage] is None:
                         B, H, W = sample['depth'][stage].size()
-                        itg_state[stage] = torch.ones((B, D, H, W), dtype=torch.float32) / D
+                        itg_state[stage] = torch.zeros((B, D, H, W), dtype=torch.float32) # / D
                     else:
-                        itg_state[stage][is_begin] = 1.0 / D
+                        itg_state[stage][is_begin] = 0 # 1.0 / D
 
                 loss, scalar_outputs, image_outputs, itg_vol = test_sample_depth(model, model_loss, sample,
                                                                                  (prev_proj_matrices, itg_state), args)
