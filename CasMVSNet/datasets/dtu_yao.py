@@ -64,6 +64,7 @@ class MVSDataset(Dataset):
                         left = num_viewpoint - self.nviews
                     src_views = [int(x) for x in f.readline().rstrip().split()[1::2]]
                     src_views = src_views[:(self.nviews-1)]
+
                     # f.readline() # ignore the given source views
                     # src_views = [x for x in range(left, left+self.nviews) if x != ref_view]
                     # light conditions 0-6
