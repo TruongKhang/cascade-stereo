@@ -451,7 +451,7 @@ if __name__ == '__main__':
 
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
-    train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 5, args.numdepth, args.interval_scale,
+    train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 3, args.numdepth, args.interval_scale,
                                shuffle=True, seq_size=49, batch_size=args.batch_size)
     test_dataset = MVSDataset(args.testpath, args.testlist, "val", 5, args.numdepth, args.interval_scale,
                               shuffle=False, seq_size=49, batch_size=1)

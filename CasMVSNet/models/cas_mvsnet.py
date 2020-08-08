@@ -61,7 +61,7 @@ class DepthNet(nn.Module):
         ref_proj_cur[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
         ref_proj_prev, prev_costvol = prev_state
         warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values)
-        log_prob_volume = log_prob_volume + warped_costvol
+        log_prob_volume = log_prob_volume + 0.8*warped_costvol
         log_prob_volume = F.log_softmax(log_prob_volume, dim=1)
 
         prob_volume = torch.exp(log_prob_volume)
