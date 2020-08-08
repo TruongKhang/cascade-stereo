@@ -59,9 +59,10 @@ class DepthNet(nn.Module):
         # edit by Khang
         ref_proj_cur = ref_proj[:, 0].clone()
         ref_proj_cur[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
-        ref_proj_prev, prev_costvol = prev_state
-        warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values)
-        log_prob_volume = log_prob_volume + warped_costvol
+        ref_proj_prev, prev_costvol, prev_depth_values = prev_state
+        warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
+                                      prev_depth_values=prev_depth_values)
+        log_prob_volume = log_prob_volume + 0.8*warped_costvol
         log_prob_volume = F.log_softmax(log_prob_volume, dim=1)
 
         prob_volume = torch.exp(log_prob_volume)
@@ -131,7 +132,7 @@ class CascadeMVSNet(nn.Module):
 
     def forward(self, imgs, proj_matrices, depth_values, prev_state=None):
 
-        prev_ref_matrices, prev_costvol = prev_state
+        prev_ref_matrices, prev_costvol, prev_depth_values = prev_state
 
         depth_min = float(depth_values[0, 0].cpu().numpy())
         depth_max = float(depth_values[0, -1].cpu().numpy())
@@ -145,6 +146,7 @@ class CascadeMVSNet(nn.Module):
 
         outputs = {}
         depth, cur_depth = None, None
+        depth_range_values = {}
         for stage_idx in range(self.num_stage):
             # print("*********************stage{}*********************".format(stage_idx + 1))
             #stage feature, proj_mats, scales
@@ -154,6 +156,7 @@ class CascadeMVSNet(nn.Module):
             # edit by Khang
             prev_costvol_stage = prev_costvol["stage{}".format(stage_idx + 1)]
             prev_ref_matrix = prev_ref_matrices["stage{}".format(stage_idx + 1)]
+            prev_depth_values_stage = prev_depth_values["stage{}".format(stage_idx + 1)]
 
             if depth is not None:
                 if self.grad_method == "detach":
@@ -174,22 +177,27 @@ class CascadeMVSNet(nn.Module):
                                                         max_depth=depth_max,
                                                         min_depth=depth_min)
 
+            # added by Khang
+            depth_values_stage = F.interpolate(depth_range_samples.unsqueeze(1),
+                                                [self.ndepths[stage_idx], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)],
+                                                mode='trilinear', align_corners=Align_Corners_Range).squeeze(1)
+
             outputs_stage = self.DepthNet(features_stage, proj_matrices_stage,
-                                          depth_values=F.interpolate(depth_range_samples.unsqueeze(1),
-                                                                     [self.ndepths[stage_idx], img.shape[2]//int(stage_scale), img.shape[3]//int(stage_scale)], mode='trilinear',
-                                                                     align_corners=Align_Corners_Range).squeeze(1),
+                                          depth_values=depth_values_stage,
                                           num_depth=self.ndepths[stage_idx],
                                           cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
-                                          prev_state=(prev_ref_matrix, prev_costvol_stage))
+                                          prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage))
 
             depth = outputs_stage['depth']
 
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
+            depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage
 
         # depth map refinement
         if self.refine:
             refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
             outputs["refined_depth"] = refined_depth
+        outputs["depth_candidates"] = depth_range_values
 
         return outputs
