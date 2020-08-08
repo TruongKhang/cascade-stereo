@@ -80,6 +80,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
 
         itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
         prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
+        depth_candidates = None
         TrainImgLoader.dataset.generate_indices()
         # training
         for batch_idx, sample in enumerate(TrainImgLoader):
@@ -108,8 +109,8 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                 else:
                     itg_state[stage][is_begin] = 0 #1.0 / D
 
-            loss, scalar_outputs, image_outputs, itg_vol = train_sample(model, model_loss, optimizer, sample,
-                                                                        (prev_proj_matrices, itg_state), args)
+            loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = train_sample(model, model_loss, optimizer,
+                                                                                          sample, (prev_proj_matrices, itg_state, depth_candidates), args)
 
             prev_proj_matrices = ref_matrices
             for stage in itg_state.keys():
@@ -141,6 +142,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
         # testing
         itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
         prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
+        depth_candidates = None
         if (epoch_idx % args.eval_freq == 0) or (epoch_idx == args.epochs - 1):
             avg_test_scalars = DictAverageMeter()
             for batch_idx, sample in enumerate(TestImgLoader):
@@ -169,8 +171,8 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                     else:
                         itg_state[stage][is_begin] = 0 # 1.0 / D
 
-                loss, scalar_outputs, image_outputs, itg_vol = test_sample_depth(model, model_loss, sample,
-                                                                                 (prev_proj_matrices, itg_state), args)
+                loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = test_sample_depth(model, model_loss, sample,
+                                                                                 (prev_proj_matrices, itg_state, depth_candidates), args)
 
                 prev_proj_matrices = ref_matrices
                 for stage in itg_state.keys():
@@ -258,7 +260,8 @@ def train_sample(model, model_loss, optimizer, sample_cuda, prev_state, args):
     if is_distributed:
         scalar_outputs = reduce_scalar_outputs(scalar_outputs)
 
-    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), prob_vols
+    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), \
+           prob_vols, outputs["depth_candidates"]
 
 
 @make_nograd_func
@@ -311,7 +314,8 @@ def test_sample_depth(model, model_loss, sample_cuda, prev_state, args):
     if is_distributed:
         scalar_outputs = reduce_scalar_outputs(scalar_outputs)
 
-    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), prob_vols
+    return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), \
+           prob_vols, outputs["depth_candidates"]
 
 
 def profile():
