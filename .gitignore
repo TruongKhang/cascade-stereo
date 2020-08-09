@@ -9,3 +9,5 @@ events.out.*
 *.cpkt
 tmp*/
 CasMVSNet/results/
+CasMVSNet/lists/dtu/subset*
+CasMVSNet/checkpoints1
