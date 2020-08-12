@@ -218,8 +218,8 @@ def save_scene_depth(testlist):
                         cfd_stage_filename = os.path.join(args.outdir, key, filename.format('confidence', '.pfm'))
                         os.makedirs(depth_stage_filename.rsplit('/', 1)[0], exist_ok=True)
                         os.makedirs(cfd_stage_filename.rsplit('/', 1)[0], exist_ok=True)
-                        save_pfm(depth_stage_filename, outputs[key]["depth"])
-                        save_pfm(cfd_stage_filename, outputs[key]["photometric_confidence"])
+                        save_pfm(depth_stage_filename, outputs[key]["depth"][0])
+                        save_pfm(cfd_stage_filename, outputs[key]["photometric_confidence"][0])
 
                 # vis
                 # print(photometric_confidence.mean(), photometric_confidence.min(), photometric_confidence.max())

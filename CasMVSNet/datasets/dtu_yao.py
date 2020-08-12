@@ -22,9 +22,10 @@ class MVSDataset(Dataset):
 
     def build_list(self):
         metas = []
-        with open(self.listfile) as f:
-            scans = f.readlines()
-            scans = [line.rstrip() for line in scans]
+        scans = self.listfile
+        #with open(self.listfile) as f:
+        #    scans = f.readlines()
+        #    scans = [line.rstrip() for line in scans]
 
         # scans
         for scan in scans:
@@ -177,4 +178,5 @@ class MVSDataset(Dataset):
                 "proj_matrices": proj_matrices_ms,
                 "depth": depth_ms,
                 "depth_values": depth_values,
+                "filename": scan + '/{}/' + '{:0>3}_{}'.format(view_ids[0]+1, light_idx) + "{}",
                 "mask": mask }
