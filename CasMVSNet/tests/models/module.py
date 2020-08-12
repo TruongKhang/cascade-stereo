@@ -68,13 +68,13 @@ class TestWarpingVolume(unittest.TestCase):
         depth_values = depth_values.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, height, width)
 
         src_vol = torch.ones((batch_size, num_depth, height, width)) #torch.rand(batch_size, num_depth, height, width)
-        src_vol = F.softmax(src_vol, dim=1)
+        src_vol = F.log_softmax(src_vol, dim=1)
 
         warped_vol = resample_vol(src_vol.float().cuda(), src_matrix.float().cuda(), ref_matrix.float().cuda(),
                                   depth_values.float().cuda())
         print(warped_vol.size())
-        check = torch.mean(warped_vol - 1.0 / num_depth) < 0.00001
-        print(torch.mean(warped_vol - 1.0 / num_depth))
+        check = torch.mean(torch.exp(warped_vol) - 1.0 / num_depth) < 0.00001
+        print(torch.mean(torch.exp(warped_vol) - 1.0 / num_depth))
         self.assertTrue(check)
 
     def test_volume2(self):
@@ -110,7 +110,7 @@ class TestWarpingVolume(unittest.TestCase):
         src_ind = torch.argmax(src_vol, dim=1).squeeze(0).cpu()
         src_vol = torch.log(src_vol)
         warped_vol = resample_vol(src_vol.float().cuda(), src_matrix.float().cuda(), ref_matrix.float().cuda(),
-                                  depth_values.float().cuda())
+                                  depth_values.float().cuda(), prev_depth_values=None)
         warped_vol = torch.exp(warped_vol)
         ind = torch.argmax(warped_vol, dim=1)
         ind = ind.squeeze(0).float().cpu().numpy()
