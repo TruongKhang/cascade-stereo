@@ -379,7 +379,7 @@ if __name__ == '__main__':
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
     train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 3, args.numdepth, args.interval_scale)
-    test_dataset = MVSDataset(args.testpath, args.testlist, "test", 5, args.numdepth, args.interval_scale)
+    test_dataset = MVSDataset(args.testpath, args.testlist, "val", 5, args.numdepth, args.interval_scale)
 
     if is_distributed:
         train_sampler = torch.utils.data.DistributedSampler(train_dataset, num_replicas=dist.get_world_size(),
@@ -390,12 +390,12 @@ if __name__ == '__main__':
         TrainImgLoader = DataLoader(train_dataset, args.batch_size, sampler=train_sampler, num_workers=1,
                                     drop_last=True,
                                     pin_memory=args.pin_m)
-        TestImgLoader = DataLoader(test_dataset, args.batch_size, sampler=test_sampler, num_workers=1, drop_last=False,
+        TestImgLoader = DataLoader(test_dataset, 1, sampler=test_sampler, num_workers=1, drop_last=False,
                                    pin_memory=args.pin_m)
     else:
         TrainImgLoader = DataLoader(train_dataset, args.batch_size, shuffle=True, num_workers=1, drop_last=True,
                                     pin_memory=args.pin_m)
-        TestImgLoader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=1, drop_last=False,
+        TestImgLoader = DataLoader(test_dataset, 1, shuffle=False, num_workers=1, drop_last=False,
                                    pin_memory=args.pin_m)
 
 

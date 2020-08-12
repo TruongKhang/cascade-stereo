@@ -211,6 +211,16 @@ def save_scene_depth(testlist):
                 img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(img_filename, img_bgr)
 
+                # added by Khang
+                for key in outputs.keys():
+                    if 'stage' in key:
+                        depth_stage_filename = os.path.join(args.outdir, key, filename.format('depth_est', '.pfm'))
+                        cfd_stage_filename = os.path.join(args.outdir, key, filename.format('confidence', '.pfm'))
+                        os.makedirs(depth_stage_filename.rsplit('/', 1)[0], exist_ok=True)
+                        os.makedirs(cfd_stage_filename.rsplit('/', 1)[0], exist_ok=True)
+                        save_pfm(depth_stage_filename, outputs[key]["depth"])
+                        save_pfm(cfd_stage_filename, outputs[key]["photometric_confidence"])
+
                 # vis
                 # print(photometric_confidence.mean(), photometric_confidence.min(), photometric_confidence.max())
                 # import matplotlib.pyplot as plt
