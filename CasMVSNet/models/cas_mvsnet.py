@@ -55,16 +55,20 @@ class DepthNet(nn.Module):
             prob_volume_pre += prob_volume_init
 
         log_prob_volume = F.log_softmax(prob_volume_pre, dim=1)
+        # prob_volume = F.softmax(prob_volume_pre, dim=1)
 
         # edit by Khang
         ref_proj_cur = ref_proj[:, 0].clone()
         ref_proj_cur[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
-        ref_proj_prev, prev_costvol, prev_depth_values = prev_state
+        ref_proj_prev, prev_costvol, prev_depth_values, is_begin = prev_state
+        if prev_costvol is None:
+            B, D, H, W = log_prob_volume.size()
+            prev_costvol = torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D).cuda()
         warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
-                                      prev_depth_values=prev_depth_values)
-        log_prob_volume = log_prob_volume + 0.8*warped_costvol
+                                      prev_depth_values=prev_depth_values, begin_video=is_begin)
+        log_prob_volume = log_prob_volume + 0.5*warped_costvol
         log_prob_volume = F.log_softmax(log_prob_volume, dim=1)
-
+        # prob_volume = prob_volume * warped_costvol
         prob_volume = torch.exp(log_prob_volume)
 
         depth = depth_regression(prob_volume, depth_values=depth_values)
@@ -132,7 +136,7 @@ class CascadeMVSNet(nn.Module):
 
     def forward(self, imgs, proj_matrices, depth_values, prev_state=None):
 
-        prev_ref_matrices, prev_costvol, prev_depth_values = prev_state
+        prev_ref_matrices, prev_costvol, prev_depth_values, is_begin = prev_state
 
         depth_min = float(depth_values[0, 0].cpu().numpy())
         depth_max = float(depth_values[0, -1].cpu().numpy())
@@ -186,13 +190,13 @@ class CascadeMVSNet(nn.Module):
                                           depth_values=depth_values_stage,
                                           num_depth=self.ndepths[stage_idx],
                                           cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
-                                          prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage))
+                                          prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage, is_begin))
 
             depth = outputs_stage['depth']
 
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
-            depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage
+            depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
 
         # depth map refinement
         if self.refine:
