@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -328,7 +329,7 @@ def homo_warping(src_fea, src_proj, ref_proj, depth_values):
     return warped_src_fea
 
 
-def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=None):
+def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=None, begin_video=None):
     # src_vol: [B, Ndepth, H, W]
     # src_proj: [B, 4, 4]
     # ref_proj: [B, 4, 4]
@@ -340,8 +341,10 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=No
 
     if prev_depth_values is None:
         prev_depth_values = depth_values
-    depth_min = depth_values[:, 0] # [B, H, W]
-    depth_max = depth_values[:, -1] # [B, H, W]
+    elif begin_video is not None:
+        prev_depth_values[begin_video] = depth_values[begin_video]
+    depth_min = prev_depth_values[:, 0] # [B, H, W]
+    depth_max = prev_depth_values[:, -1] # [B, H, W]
     depth_half = (depth_max + depth_min) * .5
     depth_radius = (depth_max - depth_min) * .5
     depth_half, depth_radius = depth_half.view(batch, 1, -1), depth_radius.view(batch, 1, -1)
@@ -360,7 +363,7 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=No
         xyz = torch.unsqueeze(xyz, 0).repeat(batch, 1, 1)
         # [B, 3, H*W]
         rot_xyz = torch.matmul(rot, xyz)  # [B, 3, H*W]
-        rot_depth_xyz = rot_xyz.unsqueeze(2).repeat(1, 1, num_depth, 1) * prev_depth_values.view(batch, 1, num_depth,
+        rot_depth_xyz = rot_xyz.unsqueeze(2).repeat(1, 1, num_depth, 1) * depth_values.view(batch, 1, num_depth,
                                                                                             -1)  # [B, 3, Ndepth, H*W]
         proj_xyz = rot_depth_xyz + trans.view(batch, 3, 1, 1)  # [B, 3, Ndepth, H*W]
         proj_xy = proj_xyz[:, :2, :, :] / proj_xyz[:, 2:3, :, :]  # [B, 2, Ndepth, H*W]
@@ -370,14 +373,31 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=No
         proj_xyz_normalized = torch.stack((proj_x_normalized, proj_y_normalized, proj_z_normalized), dim=3)  # [B, Ndepth, H*W, 3]
         grid = proj_xyz_normalized
 
-    warped_src_vol = F.grid_sample(src_vol.unsqueeze(1), grid.view(batch, num_depth, height, width, 3),
+    src_vol_new = set_vol_border(src_vol.unsqueeze(1), math.log(1.0/num_depth))
+    warped_src_vol = F.grid_sample(src_vol_new, grid.view(batch, num_depth, height, width, 3),
                                    mode='bilinear',
                                    padding_mode='border')
-    warped_src_vol = warped_src_vol.view(batch, num_depth, height, width)
+    warped_src_vol = warped_src_vol.squeeze(1).view(batch, num_depth, height, width)
+    warped_src_vol = F.log_softmax(warped_src_vol, dim=1)
     # print(warped_src_vol.min(), warped_src_vol.max())
 
-    return warped_src_vol.clamp(min=-1000., max=0) #F.softmax(warped_src_vol, dim=1)
+    return warped_src_vol.clamp(min=-1000, max=0) #F.softmax(warped_src_vol, dim=1)
 
+def set_vol_border(vol, border_val):
+    '''
+    inputs:
+    vol - a torch tensor in 3D: N x C x D x H x W
+    border_val - a float, the border value
+    '''
+    vol_ = vol + 0.
+    vol_[:, :, 0, :, :] = border_val
+    vol_[:, :, :, 0, :] = border_val
+    vol_[:, :, :, :, 0] = border_val
+    vol_[:, :, -1, :, :] = border_val
+    vol_[:, :, :, -1, :] = border_val
+    vol_[:, :, :, :, -1] = border_val
+
+    return vol_
 
 # def resample_vol_cuda(src_vol, src_proj, ref_proj, cam_intrinsic=None,
 #                       d_candi=None, d_candi_new=None,

@@ -11,6 +11,7 @@ from models import *
 from utils import *
 from models.module import resample_vol
 import torch.distributed as dist
+import math
 
 SEED = 123
 torch.manual_seed(SEED)
@@ -80,7 +81,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
 
         itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
         prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
-        depth_candidates = None
+        depth_candidates = {'stage1': None, 'stage2': None, 'stage3': None}
         TrainImgLoader.dataset.generate_indices()
         # training
         for batch_idx, sample in enumerate(TrainImgLoader):
@@ -97,20 +98,22 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                 ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
                 ref_proj_new = ref_proj_stage[:, 0].clone()
                 ref_proj_new[:, :3, :4] = torch.matmul(ref_proj_stage[:, 1, :3, :3], ref_proj_stage[:, 0, :3, :4])
-                if prev_proj_matrices[stage] is None:
+                if (prev_proj_matrices[stage] is None) or (epoch_idx > 0):
                     prev_proj_matrices[stage] = ref_proj_new
                 else:
                     prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
                 ref_matrices[stage] = ref_proj_new
-                D = sample['depth_values'].size(1)
-                if itg_state[stage] is None:
-                    B, H, W = sample['depth'][stage].size()
-                    itg_state[stage] = torch.zeros((B, D, H, W), dtype=torch.float32) # / D
+                # D = sample['depth_values'].size(1)
+                if (itg_state[stage] is None) or (epoch_idx > 0):
+                    # B, H, W = sample['depth'][stage].size()
+                    itg_state[stage] = None #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
+                    depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
                 else:
-                    itg_state[stage][is_begin] = 0 #1.0 / D
+                    D = itg_state[stage].size(1)
+                    itg_state[stage][is_begin] = math.log(1.0 / D)
 
             loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = train_sample(model, model_loss, optimizer,
-                                                                                          sample, (prev_proj_matrices, itg_state, depth_candidates), args)
+                                                                                          sample, (prev_proj_matrices, itg_state, depth_candidates, is_begin), args)
 
             prev_proj_matrices = ref_matrices
             for stage in itg_state.keys():
@@ -142,7 +145,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
         # testing
         itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
         prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
-        depth_candidates = None
+        depth_candidates = {'stage1': None, 'stage2': None, 'stage3': None}
         if (epoch_idx % args.eval_freq == 0) or (epoch_idx == args.epochs - 1):
             avg_test_scalars = DictAverageMeter()
             for batch_idx, sample in enumerate(TestImgLoader):
@@ -159,20 +162,22 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                     ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
                     ref_proj_new = ref_proj_stage[:, 0].clone()
                     ref_proj_new[:, :3, :4] = torch.matmul(ref_proj_stage[:, 1, :3, :3], ref_proj_stage[:, 0, :3, :4])
-                    if prev_proj_matrices[stage] is None:
+                    if (prev_proj_matrices[stage] is None) or (epoch_idx > 0):
                         prev_proj_matrices[stage] = ref_proj_new
                     else:
                         prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
                     ref_matrices[stage] = ref_proj_new
-                    D = sample['depth_values'].size(1)
-                    if itg_state[stage] is None:
-                        B, H, W = sample['depth'][stage].size()
-                        itg_state[stage] = torch.zeros((B, D, H, W), dtype=torch.float32) # / D
+                    # D = sample['depth_values'].size(1)
+                    if (itg_state[stage] is None) or (epoch_idx > 0):
+                        # B, H, W = sample['depth'][stage].size()
+                        itg_state[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None} # torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
+                        depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
                     else:
-                        itg_state[stage][is_begin] = 0 # 1.0 / D
+                        D = itg_state[stage].size(1)
+                        itg_state[stage][is_begin] = math.log(1.0 / D)
 
                 loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = test_sample_depth(model, model_loss, sample,
-                                                                                 (prev_proj_matrices, itg_state, depth_candidates), args)
+                                                                                 (prev_proj_matrices, itg_state, depth_candidates, is_begin), args)
 
                 prev_proj_matrices = ref_matrices
                 for stage in itg_state.keys():
@@ -455,7 +460,7 @@ if __name__ == '__main__':
 
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
-    train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 5, args.numdepth, args.interval_scale,
+    train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 3, args.numdepth, args.interval_scale,
                                shuffle=True, seq_size=49, batch_size=args.batch_size)
     test_dataset = MVSDataset(args.testpath, args.testlist, "val", 5, args.numdepth, args.interval_scale,
                               shuffle=False, seq_size=49, batch_size=1)
