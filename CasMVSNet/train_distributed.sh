@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-MVS_TRAINING="/dev/dtu_dataset/train"
+MVS_TRAINING="/home/khang/project/dtu_dataset/train"
 
 LOG_DIR=$2
 if [ ! -d $LOG_DIR ]; then
