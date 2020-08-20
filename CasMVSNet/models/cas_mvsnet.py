@@ -10,7 +10,7 @@ class DepthNet(nn.Module):
         super(DepthNet, self).__init__()
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
-                prev_state=None):
+                prev_state=None, vol_filtering=None):
         proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
@@ -66,6 +66,7 @@ class DepthNet(nn.Module):
             prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda() #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D).cuda()
         warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
                                       prev_depth_values=prev_depth_values, begin_video=is_begin)
+        warped_costvol = vol_filtering(warped_costvol)
         itg_prob_volume = prob_volume + warped_costvol
         itg_prob_volume = F.normalize(itg_prob_volume, p=1, dim=1) #F.log_softmax(log_prob_volume, dim=1)
         # prob_volume = prob_volume * warped_costvol
@@ -132,7 +133,19 @@ class CascadeMVSNet(nn.Module):
                                                       for i in range(self.num_stage)])
         if self.refine:
             self.refine_network = RefineNet()
+
         self.DepthNet = DepthNet()
+        self.vol_filtering = {
+            "stage1": nn.Sequential(nn.Conv2d(self.ndepths[0], self.ndepths[0], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(self.ndepths[0]),
+                                    nn.Sigmoid()),
+            "stage2": nn.Sequential(nn.Conv2d(self.ndepths[1], self.ndepths[1], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(self.ndepths[1]),
+                                    nn.Sigmoid()),
+            "stage3": nn.Sequential(nn.Conv2d(self.ndepths[2], self.ndepths[2], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(self.ndepths[2]),
+                                    nn.Sigmoid()),
+        }
 
     def forward(self, imgs, proj_matrices, depth_values, prev_state=None):
 
@@ -190,7 +203,8 @@ class CascadeMVSNet(nn.Module):
                                           depth_values=depth_values_stage,
                                           num_depth=self.ndepths[stage_idx],
                                           cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
-                                          prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage, is_begin))
+                                          prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage, is_begin),
+                                          vol_filtering=self.vol_filtering["stage{}".format(stage_idx + 1)])
 
             depth = outputs_stage['depth']
 
