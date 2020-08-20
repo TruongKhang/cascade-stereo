@@ -378,7 +378,7 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=No
                                    mode='bilinear',
                                    padding_mode='border')
     warped_src_vol = warped_src_vol.squeeze(1).view(batch, num_depth, height, width)
-    warped_src_vol = F.normalize(warped_src_vol, p=1, dim=1) #F.log_softmax(warped_src_vol, dim=1)
+    # warped_src_vol = F.normalize(warped_src_vol, p=1, dim=1) #F.log_softmax(warped_src_vol, dim=1)
     # print(warped_src_vol.min(), warped_src_vol.max())
 
     return warped_src_vol #warped_src_vol.clamp(min=-1000, max=0)
