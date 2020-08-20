@@ -109,8 +109,8 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                     itg_state[stage] = None #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
                     depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
                 else:
-                    D = itg_state[stage].size(1)
-                    itg_state[stage][is_begin] = math.log(1.0 / D)
+                    # D = itg_state[stage].size(1)
+                    itg_state[stage][is_begin] = 0 #math.log(1.0 / D)
 
             loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = train_sample(model, model_loss, optimizer,
                                                                                           sample, (prev_proj_matrices, itg_state, depth_candidates, is_begin), args)
@@ -173,8 +173,8 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                         itg_state[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None} # torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
                         depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
                     else:
-                        D = itg_state[stage].size(1)
-                        itg_state[stage][is_begin] = math.log(1.0 / D)
+                        # D = itg_state[stage].size(1)
+                        itg_state[stage][is_begin] = 0 #math.log(1.0 / D)
 
                 loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = test_sample_depth(model, model_loss, sample,
                                                                                  (prev_proj_matrices, itg_state, depth_candidates, is_begin), args)

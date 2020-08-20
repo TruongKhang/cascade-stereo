@@ -373,15 +373,15 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=No
         proj_xyz_normalized = torch.stack((proj_x_normalized, proj_y_normalized, proj_z_normalized), dim=3)  # [B, Ndepth, H*W, 3]
         grid = proj_xyz_normalized
 
-    src_vol_new = set_vol_border(src_vol.unsqueeze(1), math.log(1.0/num_depth))
+    src_vol_new = set_vol_border(src_vol.unsqueeze(1), 0) #math.log(1.0/num_depth))
     warped_src_vol = F.grid_sample(src_vol_new, grid.view(batch, num_depth, height, width, 3),
                                    mode='bilinear',
                                    padding_mode='border')
     warped_src_vol = warped_src_vol.squeeze(1).view(batch, num_depth, height, width)
-    warped_src_vol = F.log_softmax(warped_src_vol, dim=1)
+    # warped_src_vol =  F.log_softmax(warped_src_vol, dim=1)
     # print(warped_src_vol.min(), warped_src_vol.max())
 
-    return warped_src_vol.clamp(min=-1000, max=0) #F.softmax(warped_src_vol, dim=1)
+    return warped_src_vol #warped_src_vol.clamp(min=-1000, max=0)
 
 def set_vol_border(vol, border_val):
     '''
