@@ -54,24 +54,24 @@ class DepthNet(nn.Module):
         if prob_volume_init is not None:
             prob_volume_pre += prob_volume_init
 
-        log_prob_volume = F.log_softmax(prob_volume_pre, dim=1)
-        # prob_volume = F.softmax(prob_volume_pre, dim=1)
+        # log_prob_volume = F.log_softmax(prob_volume_pre, dim=1)
+        prob_volume = F.softmax(prob_volume_pre, dim=1)
 
         # edit by Khang
         ref_proj_cur = ref_proj[:, 0].clone()
         ref_proj_cur[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
         ref_proj_prev, prev_costvol, prev_depth_values, is_begin = prev_state
         if prev_costvol is None:
-            B, D, H, W = log_prob_volume.size()
-            prev_costvol = torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D).cuda()
+            B, D, H, W = prob_volume.size() #log_prob_volume.size()
+            prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda() #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D).cuda()
         warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
                                       prev_depth_values=prev_depth_values, begin_video=is_begin)
-        log_prob_volume = log_prob_volume + 0.5*warped_costvol
-        log_prob_volume = F.log_softmax(log_prob_volume, dim=1)
+        itg_prob_volume = prob_volume + warped_costvol
+        itg_prob_volume = F.normalize(itg_prob_volume, p=1, dim=1) #F.log_softmax(log_prob_volume, dim=1)
         # prob_volume = prob_volume * warped_costvol
-        prob_volume = torch.exp(log_prob_volume)
+        # prob_volume = torch.exp(log_prob_volume)
 
-        depth = depth_regression(prob_volume, depth_values=depth_values)
+        depth = depth_regression(itg_prob_volume, depth_values=depth_values)
 
         with torch.no_grad():
             # photometric confidence
@@ -89,7 +89,7 @@ class DepthNet(nn.Module):
         # prev_confidence = torch.gather(prev_prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
         # final_depth = depth * photometric_confidence + prev_depth * prev_confidence
         # final_confidence = (photometric_confidence + prev_confidence) / 2
-        return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": log_prob_volume}
+        return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": itg_prob_volume}
 
         # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
