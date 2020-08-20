@@ -98,13 +98,13 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                 ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
                 ref_proj_new = ref_proj_stage[:, 0].clone()
                 ref_proj_new[:, :3, :4] = torch.matmul(ref_proj_stage[:, 1, :3, :3], ref_proj_stage[:, 0, :3, :4])
-                if (prev_proj_matrices[stage] is None) or (epoch_idx == 0):
+                if prev_proj_matrices[stage] is None:
                     prev_proj_matrices[stage] = ref_proj_new
                 else:
                     prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
                 ref_matrices[stage] = ref_proj_new
                 # D = sample['depth_values'].size(1)
-                if (itg_state[stage] is None) or (epoch_idx == 0):
+                if itg_state[stage] is None:
                     # B, H, W = sample['depth'][stage].size()
                     itg_state[stage] = None #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
                     depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
@@ -162,13 +162,13 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                     ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
                     ref_proj_new = ref_proj_stage[:, 0].clone()
                     ref_proj_new[:, :3, :4] = torch.matmul(ref_proj_stage[:, 1, :3, :3], ref_proj_stage[:, 0, :3, :4])
-                    if (prev_proj_matrices[stage] is None) or (epoch_idx == 0):
+                    if prev_proj_matrices[stage] is None:
                         prev_proj_matrices[stage] = ref_proj_new
                     else:
                         prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
                     ref_matrices[stage] = ref_proj_new
                     # D = sample['depth_values'].size(1)
-                    if (itg_state[stage] is None) or (epoch_idx == 0):
+                    if itg_state[stage] is None:
                         # B, H, W = sample['depth'][stage].size()
                         itg_state[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None} # torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
                         depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
