@@ -72,22 +72,27 @@ class DepthNet(nn.Module):
         ref_proj_cur = ref_proj[:, 0].clone()
         ref_proj_cur[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
         ref_proj_prev, prev_costvol, prev_depth_values, is_begin = prev_state
-        if is_begin.sum() == prob_volume.size(0):
-            print('is begining of video')
+        if is_begin.sum() > 0:
+            # print('is begining of video')
             B, D, H, W = prob_volume.size() #log_prob_volume.size()
             # prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda() #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D).cuda()
-            warped_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda()
-            prob_volume = prob_volume + warped_costvol
+            if prev_costvol is None:
+                prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda()
+            warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
+                                            prev_depth_values=prev_depth_values, begin_video=is_begin)
+            warped_costvol[is_begin] = 0
+            if is_begin.sum() < B:
+                warped_costvol[~is_begin] = self.vol_filtering[stage_idx](warped_costvol[~is_begin])
         else:
             warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
                                             prev_depth_values=prev_depth_values, begin_video=is_begin)
-            warped_costvol = self.vol_filtering[stage_idx](warped_costvol[~is_begin])
-            prob_volume[~is_begin] = prob_volume[~is_begin] + warped_costvol
-        prob_volume = F.normalize(prob_volume, p=1, dim=1) #F.log_softmax(log_prob_volume, dim=1)
+            warped_costvol = self.vol_filtering[stage_idx](warped_costvol)
+        itg_prob_volume = prob_volume + warped_costvol
+        itg_prob_volume = F.normalize(prob_volume, p=1, dim=1) #F.log_softmax(log_prob_volume, dim=1)
         # prob_volume = prob_volume * warped_costvol
         # prob_volume = torch.exp(log_prob_volume)
 
-        depth = depth_regression(prob_volume, depth_values=depth_values)
+        depth = depth_regression(itg_prob_volume, depth_values=depth_values)
 
         with torch.no_grad():
             # photometric confidence
@@ -105,7 +110,7 @@ class DepthNet(nn.Module):
         # prev_confidence = torch.gather(prev_prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
         # final_depth = depth * photometric_confidence + prev_depth * prev_confidence
         # final_confidence = (photometric_confidence + prev_confidence) / 2
-        return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": prob_volume}
+        return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": itg_prob_volume}
 
         # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
