@@ -10,13 +10,13 @@ Align_Corners_Range = False
 class DepthNet(nn.Module):
     def __init__(self, ndepths):
         super(DepthNet, self).__init__()
-        vol_filtering_stage1 = nn.Sequential(nn.Conv2d(ndepths[0], ndepths[0], kernel_size=1, bias=False),
+        vol_filtering_stage1 = nn.Sequential(nn.Conv2d(2*ndepths[0], ndepths[0], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[0]),
                                     nn.Sigmoid())
-        vol_filtering_stage2 = nn.Sequential(nn.Conv2d(ndepths[1], ndepths[1], kernel_size=1, bias=False),
+        vol_filtering_stage2 = nn.Sequential(nn.Conv2d(2*ndepths[1], ndepths[1], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[1]),
                                     nn.Sigmoid())
-        vol_filtering_stage3 = nn.Sequential(nn.Conv2d(ndepths[2], ndepths[2], kernel_size=1, bias=False),
+        vol_filtering_stage3 = nn.Sequential(nn.Conv2d(2*ndepths[2], ndepths[2], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[2]),
                                     nn.Sigmoid())
         self.vol_filtering = nn.ModuleList([vol_filtering_stage1, vol_filtering_stage2, vol_filtering_stage3])
@@ -88,13 +88,13 @@ class DepthNet(nn.Module):
             if is_begin.sum() < B:
                 input_vol = torch.cat((cur_vol[~is_begin], warped_costvol[~is_begin]), dim=1)
                 weight_vol = self.vol_filtering[stage_idx](input_vol)
-                warped_costvol[~is_begin] =  warped_costvol[~is_begin] * weight_vol.detach()
+                warped_costvol[~is_begin] =  warped_costvol[~is_begin] * weight_vol
                 loss = self.stereo_focal_loss.loss_per_level(weight_vol, gt_depth[~is_begin], variance, depth_values[~is_begin])
         else:
             warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
                                           prev_depth_values=prev_depth_values, begin_video=is_begin)
             weight_vol = self.vol_filtering[stage_idx](torch.cat((cur_vol, warped_costvol), dim=1))
-            warped_costvol = warped_costvol * weight_vol.detach()
+            warped_costvol = warped_costvol * weight_vol
             loss = self.stereo_focal_loss.loss_per_level(weight_vol, gt_depth, variance, depth_values)
 
         itg_prob_volume = prob_volume + warped_costvol
@@ -121,7 +121,7 @@ class DepthNet(nn.Module):
         # final_depth = depth * photometric_confidence + prev_depth * prev_confidence
         # final_confidence = (photometric_confidence + prev_confidence) / 2
         return {"depth": depth, "photometric_confidence": photometric_confidence,
-                "prob_volume": itg_prob_volume, "vol_loss": loss}
+                "prob_volume": itg_prob_volume, "loss_vol": loss}
 
         # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
@@ -201,7 +201,7 @@ class CascadeMVSNet(nn.Module):
             prev_costvol_stage = prev_costvol["stage{}".format(stage_idx + 1)]
             prev_ref_matrix = prev_ref_matrices["stage{}".format(stage_idx + 1)]
             prev_depth_values_stage = prev_depth_values["stage{}".format(stage_idx + 1)]
-            gt_depth = gt_depth["stage{}".format(stage_idx + 1)]
+            gt_depth_stage = gt_depth["stage{}".format(stage_idx + 1)].unsqueeze(1)
 
             if depth is not None:
                 if self.grad_method == "detach":
@@ -232,7 +232,7 @@ class CascadeMVSNet(nn.Module):
                                           num_depth=self.ndepths[stage_idx],
                                           cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
                                           prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage, is_begin),
-                                          stage_idx=stage_idx, gt_depth=gt_depth,
+                                          stage_idx=stage_idx, gt_depth=gt_depth_stage,
                                           variance=self.stage_infos["stage{}".format(stage_idx + 1)]["variance"])
 
             depth = outputs_stage['depth']
@@ -240,7 +240,7 @@ class CascadeMVSNet(nn.Module):
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
             depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
-            total_loss += outputs_stage["loss"]
+            total_loss += outputs_stage["loss_vol"]
 
         # depth map refinement
         if self.refine:
