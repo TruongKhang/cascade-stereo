@@ -19,10 +19,10 @@ class Disp2Prob(object):
         Outputs:
             probability, (torch.Tensor): in [BatchSize, maxDisp, Height, Width] layout
     """
-    def __init__(self, maxDisp, gtDisp, start_disp=0, dilation=1):
+    def __init__(self, depth_vol, gtDisp, start_disp=0, dilation=1):
 
-        if not isinstance(maxDisp, int):
-            raise TypeError('int is expected, got {}'.format(type(maxDisp)))
+        if not torch.is_tensor(depth_vol):
+            raise TypeError('int is expected, got {}'.format(type(depth_vol)))
 
         if not torch.is_tensor(gtDisp):
             raise TypeError('tensor is expected, got {}'.format(type(gtDisp)))
@@ -46,11 +46,12 @@ class Disp2Prob(object):
                 raise ValueError('2nd dimension size should be 1, got {}'.format(gtDisp.size(1)))
 
         self.gtDisp = gtDisp
-        self.maxDisp = maxDisp
-        self.start_disp = start_disp
-        self.dilation = dilation
-        self.end_disp = start_disp + maxDisp - 1
-        self.disp_sample_number = (maxDisp + dilation -1) // dilation
+        # self.maxDisp = maxDisp
+        # self.start_disp = start_disp
+        # self.dilation = dilation
+        # self.end_disp = start_disp + maxDisp - 1
+        # self.disp_sample_number = (maxDisp + dilation -1) // dilation
+        self.index = depth_vol
         self.eps = 1e-40
 
     def getProb(self):
@@ -59,14 +60,15 @@ class Disp2Prob(object):
         assert c == 1
 
         # if start_disp = 0, dilation = 1, then generate disparity candidates as [0, 1, 2, ... , maxDisp-1]
-        index = torch.linspace(self.start_disp, self.end_disp, self.disp_sample_number)
-        index = index.to(self.gtDisp.device)
+        # index = torch.linspace(self.start_disp, self.end_disp, self.disp_sample_number)
+        # index = index.to(self.gtDisp.device)
 
         # [BatchSize, maxDisp, Height, Width]
-        self.index = index.repeat(b, h, w, 1).permute(0, 3, 1, 2).contiguous()
+        # self.index = index.repeat(b, h, w, 1).permute(0, 3, 1, 2).contiguous()
+        start_disp, end_disp = self.index[:, [0], :, :], self.index[:, [-1], :, :]
 
         # the gtDisp must be (start_disp, end_disp), otherwise, we have to mask it out
-        mask = (self.gtDisp > self.start_disp) & (self.gtDisp < self.end_disp)
+        mask = (self.gtDisp - start_disp > 0) & (self.gtDisp - end_disp < 0)
         mask = mask.detach().type_as(self.gtDisp)
         self.gtDisp = self.gtDisp * mask
 
@@ -98,8 +100,8 @@ class Disp2Prob(object):
 
 class LaplaceDisp2Prob(Disp2Prob):
     # variance is the diversity of the Laplace distribution
-    def __init__(self, maxDisp, gtDisp, variance=1, start_disp=0, dilation=1):
-        super(LaplaceDisp2Prob, self).__init__(maxDisp, gtDisp, start_disp, dilation)
+    def __init__(self, depth_vol, gtDisp, variance=1, start_disp=0, dilation=1):
+        super(LaplaceDisp2Prob, self).__init__(depth_vol, gtDisp, start_disp, dilation)
         self.variance = variance
 
     def calProb(self):

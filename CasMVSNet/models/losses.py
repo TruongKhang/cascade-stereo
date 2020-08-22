@@ -24,10 +24,10 @@ class StereoFocalLoss(object):
               because we will use softmax for normalization
     """
 
-    def __init__(self, max_disp=192, start_disp=0, dilation=1, weights=None, focal_coefficient=0.0, sparse=False):
-        self.max_disp = max_disp
-        self.start_disp = start_disp
-        self.dilation = dilation
+    def __init__(self, weights=None, focal_coefficient=0.0, sparse=False):
+        # self.max_disp = max_disp
+        # self.start_disp = start_disp
+        # self.dilation = dilation
         self.weights = weights
         self.focal_coefficient = focal_coefficient
         self.sparse = sparse
@@ -38,7 +38,7 @@ class StereoFocalLoss(object):
             # dense disparity ==> avg_pooling
             self.scale_func = F.adaptive_avg_pool2d
 
-    def loss_per_level(self, estCost, gtDisp, variance, dilation):
+    def loss_per_level(self, estCost, gtDisp, variance, depth_candi_vol):
         from models.utils import LaplaceDisp2Prob, GaussianDisp2Prob, OneHotDisp2Prob
         N, C, H, W = estCost.shape
         scaled_gtDisp = gtDisp.clone()
@@ -53,9 +53,9 @@ class StereoFocalLoss(object):
         # mask for valid disparity
         # (start_disp, max disparity / scale)
         # Attention: the invalid disparity of KITTI is set as 0, be sure to mask it out
-        lower_bound = self.start_disp
-        upper_bound = lower_bound + int(self.max_disp/scale)
-        mask = (scaled_gtDisp > lower_bound) & (scaled_gtDisp < upper_bound)
+        lower_bound = depth_candi_vol[:, [0], :, :] #self.start_disp
+        upper_bound = depth_candi_vol[:, [-1], :, :] #lower_bound + int(self.max_disp/scale)
+        mask = (scaled_gtDisp - lower_bound > 0) & (scaled_gtDisp - upper_bound < 0)
         mask = mask.detach_().type_as(scaled_gtDisp)
         if mask.sum() < 1.0:
             print('Stereo focal loss: there is no point\'s '
@@ -65,8 +65,7 @@ class StereoFocalLoss(object):
             # transfer disparity map to probability map
             mask_scaled_gtDisp = scaled_gtDisp * mask
             if mask_scaled_gtDisp.size(1) == 1:
-                scaled_gtProb = LaplaceDisp2Prob(int(self.max_disp/scale), mask_scaled_gtDisp, variance=variance,
-                                                 start_disp=self.start_disp, dilation=dilation).getProb()
+                scaled_gtProb = LaplaceDisp2Prob(depth_candi_vol, mask_scaled_gtDisp, variance=variance).getProb()
             else:
                 scaled_gtProb = mask_scaled_gtDisp
 

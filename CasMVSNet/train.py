@@ -233,10 +233,11 @@ def train_sample(model, model_loss, optimizer, sample_cuda, prev_state, args):
     # prev_ref_matrices, itg_vol = prev_state
 
     outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
-                    prev_state)
+                    prev_state, gt_depth=depth_gt_ms)
     depth_est = outputs["depth"]
 
-    loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms, dlossw=[float(e) for e in args.dlossw.split(",") if e])
+    loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms,
+                                  dlossw=[float(e) for e in args.dlossw.split(",") if e])
 
     if is_distributed and args.using_apex:
         with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -285,7 +286,8 @@ def test_sample_depth(model, model_loss, sample_cuda, prev_state, args):
     depth_gt = depth_gt_ms["stage{}".format(num_stage)]
     mask = mask_ms["stage{}".format(num_stage)]
 
-    outputs = model_eval(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"], prev_state)
+    outputs = model_eval(sample_cuda["imgs"], sample_cuda["proj_matrices"],
+                         sample_cuda["depth_values"], prev_state, depth_gt_ms)
     depth_est = outputs["depth"]
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms, dlossw=[float(e) for e in args.dlossw.split(",") if e])

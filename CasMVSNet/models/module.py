@@ -666,6 +666,7 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
             total_loss += depth_loss_weights[stage_idx] * depth_loss
         else:
             total_loss += 1.0 * depth_loss
+    total_loss += inputs["total_loss_vol"]
 
     return total_loss, depth_loss
 
