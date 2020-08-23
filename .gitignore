@@ -9,6 +9,6 @@ events.out.*
 *.cpkt
 tmp*/
 CasMVSNet/results/
-CasMVSNet/checkpoints/*
+CasMVSNet/checkpoints*
 CasMVSNet/checkpoints1/
 CasMVSNet/pretrained
