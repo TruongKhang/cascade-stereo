@@ -88,17 +88,18 @@ class DepthNet(nn.Module):
             if is_begin.sum() < B:
                 input_vol = torch.cat((cur_vol[~is_begin], warped_costvol[~is_begin]), dim=1)
                 weight_vol = self.vol_filtering[stage_idx](input_vol)
-                warped_costvol[~is_begin] =  warped_costvol[~is_begin] * weight_vol
-                loss = self.stereo_focal_loss.loss_per_level(weight_vol, gt_depth[~is_begin], variance, depth_values[~is_begin])
+                warped_costvol[~is_begin] = warped_costvol[~is_begin] * weight_vol
+                # loss = self.stereo_focal_loss.loss_per_level(weight_vol, gt_depth[~is_begin], variance, depth_values[~is_begin])
         else:
             warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
                                           prev_depth_values=prev_depth_values, begin_video=is_begin)
             weight_vol = self.vol_filtering[stage_idx](torch.cat((cur_vol, warped_costvol), dim=1))
             warped_costvol = warped_costvol * weight_vol
-            loss = self.stereo_focal_loss.loss_per_level(weight_vol, gt_depth, variance, depth_values)
+            # loss = self.stereo_focal_loss.loss_per_level(weight_vol, gt_depth, variance, depth_values)
 
         itg_prob_volume = prob_volume + warped_costvol
         itg_prob_volume = F.normalize(itg_prob_volume, p=1, dim=1) #F.log_softmax(log_prob_volume, dim=1)
+        loss = self.stereo_focal_loss.loss_per_level(itg_prob_volume, gt_depth, variance, depth_values)
         # prob_volume = prob_volume * warped_costvol
         # prob_volume = torch.exp(log_prob_volume)
 
@@ -147,17 +148,17 @@ class CascadeMVSNet(nn.Module):
             "stage1":{
                 "scale": 4.0,
                 "variance": 4.0,
-                "loss_weight": 0.3,
+                "loss_weight": 10,
             },
             "stage2": {
                 "scale": 2.0,
                 "variance": 2.0,
-                "loss_weight": 0.3,
+                "loss_weight": 10,
             },
             "stage3": {
                 "scale": 1.0,
                 "variance": 1.0,
-                "loss_weight": 0.5,
+                "loss_weight": 20,
             }
         }
 
