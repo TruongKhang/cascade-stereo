@@ -6,6 +6,8 @@ import time
 import sys
 sys.path.append("..")
 from utils import local_pcd
+from models.deform import SimpleBottleneck, DeformSimpleBottleneck
+
 
 def init_bn(module):
     if module.weight is not None:
@@ -592,38 +594,64 @@ class FeatureNet(nn.Module):
 
         return outputs
 
+# class CostRegNet(nn.Module):
+#     def __init__(self, in_channels, base_channels):
+#         super(CostRegNet, self).__init__()
+#         self.conv0 = Conv3d(in_channels, base_channels, padding=1)
+#
+#         self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
+#         self.conv2 = Conv3d(base_channels * 2, base_channels * 2, padding=1)
+#
+#         self.conv3 = Conv3d(base_channels * 2, base_channels * 4, stride=2, padding=1)
+#         self.conv4 = Conv3d(base_channels * 4, base_channels * 4, padding=1)
+#
+#         self.conv5 = Conv3d(base_channels * 4, base_channels * 8, stride=2, padding=1)
+#         self.conv6 = Conv3d(base_channels * 8, base_channels * 8, padding=1)
+#
+#         self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
+#
+#         self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
+#
+#         self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
+#
+#         self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
+#
+#     def forward(self, x):
+#         conv0 = self.conv0(x)
+#         conv2 = self.conv2(self.conv1(conv0))
+#         conv4 = self.conv4(self.conv3(conv2))
+#         x = self.conv6(self.conv5(conv4))
+#         x = conv4 + self.conv7(x)
+#         x = conv2 + self.conv9(x)
+#         x = conv0 + self.conv11(x)
+#         x = self.prob(x)
+#         return x
+
+
 class CostRegNet(nn.Module):
-    def __init__(self, in_channels, base_channels):
+    def __init__(self, in_channels, num_candidates):
         super(CostRegNet, self).__init__()
-        self.conv0 = Conv3d(in_channels, base_channels, padding=1)
+        self.conv0 = Conv3d(in_channels, 1, padding=1)
 
-        self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
-        self.conv2 = Conv3d(base_channels * 2, base_channels * 2, padding=1)
+        self.conv1 = SimpleBottleneck(num_candidates, num_candidates)
+        self.conv2 = SimpleBottleneck(num_candidates, num_candidates)
+        self.conv3 = SimpleBottleneck(num_candidates, num_candidates)
 
-        self.conv3 = Conv3d(base_channels * 2, base_channels * 4, stride=2, padding=1)
-        self.conv4 = Conv3d(base_channels * 4, base_channels * 4, padding=1)
+        self.conv4 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+                                            deformable_groups=2)
 
-        self.conv5 = Conv3d(base_channels * 4, base_channels * 8, stride=2, padding=1)
-        self.conv6 = Conv3d(base_channels * 8, base_channels * 8, padding=1)
-
-        self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
-
-        self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
-
-        self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
-
-        self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
+        self.conv5 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+                                            deformable_groups=2)
+        self.conv6 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+                                            deformable_groups=2)
 
     def forward(self, x):
         conv0 = self.conv0(x)
-        conv2 = self.conv2(self.conv1(conv0))
-        conv4 = self.conv4(self.conv3(conv2))
-        x = self.conv6(self.conv5(conv4))
-        x = conv4 + self.conv7(x)
-        x = conv2 + self.conv9(x)
-        x = conv0 + self.conv11(x)
-        x = self.prob(x)
+        conv0 = conv0.squeeze(1)
+        conv3 = self.conv3(self.conv2(self.conv1(conv0)))
+        x = self.conv6(self.conv5(self.conv4(conv3)))
         return x
+
 
 class RefineNet(nn.Module):
     def __init__(self):
