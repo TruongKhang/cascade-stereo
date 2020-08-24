@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,6 +6,8 @@ import time
 import sys
 sys.path.append("..")
 from utils import local_pcd
+from models.deform import SimpleBottleneck, DeformSimpleBottleneck
+
 
 def init_bn(module):
     if module.weight is not None:
@@ -328,7 +331,7 @@ def homo_warping(src_fea, src_proj, ref_proj, depth_values):
     return warped_src_fea
 
 
-def resample_vol(src_vol, src_proj, ref_proj, depth_values):
+def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=None, begin_video=None):
     # src_vol: [B, Ndepth, H, W]
     # src_proj: [B, 4, 4]
     # ref_proj: [B, 4, 4]
@@ -338,8 +341,12 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values):
     num_depth = depth_values.shape[1]
     height, width = src_vol.shape[2], src_vol.shape[3]
 
-    depth_min = depth_values[:, 0] # [B, H, W]
-    depth_max = depth_values[:, -1] # [B, H, W]
+    if prev_depth_values is None:
+        prev_depth_values = depth_values
+    elif begin_video is not None:
+        prev_depth_values[begin_video] = depth_values[begin_video]
+    depth_min = prev_depth_values[:, 0] # [B, H, W]
+    depth_max = prev_depth_values[:, -1] # [B, H, W]
     depth_half = (depth_max + depth_min) * .5
     depth_radius = (depth_max - depth_min) * .5
     depth_half, depth_radius = depth_half.view(batch, 1, -1), depth_radius.view(batch, 1, -1)
@@ -368,13 +375,31 @@ def resample_vol(src_vol, src_proj, ref_proj, depth_values):
         proj_xyz_normalized = torch.stack((proj_x_normalized, proj_y_normalized, proj_z_normalized), dim=3)  # [B, Ndepth, H*W, 3]
         grid = proj_xyz_normalized
 
-    warped_src_vol = F.grid_sample(src_vol.unsqueeze(1), grid.view(batch, num_depth, height, width, 3),
+    src_vol_new = set_vol_border(src_vol.unsqueeze(1), 0) #math.log(1.0/num_depth))
+    warped_src_vol = F.grid_sample(src_vol_new, grid.view(batch, num_depth, height, width, 3),
                                    mode='bilinear',
                                    padding_mode='border')
-    warped_src_vol = warped_src_vol.view(batch, num_depth, height, width)
+    warped_src_vol = warped_src_vol.squeeze(1).view(batch, num_depth, height, width)
+    # warped_src_vol = F.normalize(warped_src_vol, p=1, dim=1) #F.log_softmax(warped_src_vol, dim=1)
+    # print(warped_src_vol.min(), warped_src_vol.max())
 
-    return warped_src_vol.clamp(min=-1000., max=0) #F.softmax(warped_src_vol, dim=1)
+    return warped_src_vol #warped_src_vol.clamp(min=-1000, max=0)
 
+def set_vol_border(vol, border_val):
+    '''
+    inputs:
+    vol - a torch tensor in 3D: N x C x D x H x W
+    border_val - a float, the border value
+    '''
+    vol_ = vol + 0.
+    vol_[:, :, 0, :, :] = border_val
+    vol_[:, :, :, 0, :] = border_val
+    vol_[:, :, :, :, 0] = border_val
+    vol_[:, :, -1, :, :] = border_val
+    vol_[:, :, :, -1, :] = border_val
+    vol_[:, :, :, :, -1] = border_val
+
+    return vol_
 
 # def resample_vol_cuda(src_vol, src_proj, ref_proj, cam_intrinsic=None,
 #                       d_candi=None, d_candi_new=None,
@@ -569,38 +594,64 @@ class FeatureNet(nn.Module):
 
         return outputs
 
+# class CostRegNet(nn.Module):
+#     def __init__(self, in_channels, base_channels):
+#         super(CostRegNet, self).__init__()
+#         self.conv0 = Conv3d(in_channels, base_channels, padding=1)
+#
+#         self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
+#         self.conv2 = Conv3d(base_channels * 2, base_channels * 2, padding=1)
+#
+#         self.conv3 = Conv3d(base_channels * 2, base_channels * 4, stride=2, padding=1)
+#         self.conv4 = Conv3d(base_channels * 4, base_channels * 4, padding=1)
+#
+#         self.conv5 = Conv3d(base_channels * 4, base_channels * 8, stride=2, padding=1)
+#         self.conv6 = Conv3d(base_channels * 8, base_channels * 8, padding=1)
+#
+#         self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
+#
+#         self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
+#
+#         self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
+#
+#         self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
+#
+#     def forward(self, x):
+#         conv0 = self.conv0(x)
+#         conv2 = self.conv2(self.conv1(conv0))
+#         conv4 = self.conv4(self.conv3(conv2))
+#         x = self.conv6(self.conv5(conv4))
+#         x = conv4 + self.conv7(x)
+#         x = conv2 + self.conv9(x)
+#         x = conv0 + self.conv11(x)
+#         x = self.prob(x)
+#         return x
+
+
 class CostRegNet(nn.Module):
-    def __init__(self, in_channels, base_channels):
+    def __init__(self, in_channels, num_candidates):
         super(CostRegNet, self).__init__()
-        self.conv0 = Conv3d(in_channels, base_channels, padding=1)
+        self.conv0 = Conv3d(in_channels, 1, padding=1)
 
-        self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
-        self.conv2 = Conv3d(base_channels * 2, base_channels * 2, padding=1)
+        self.conv1 = SimpleBottleneck(num_candidates, num_candidates)
+        self.conv2 = SimpleBottleneck(num_candidates, num_candidates)
+        self.conv3 = SimpleBottleneck(num_candidates, num_candidates)
 
-        self.conv3 = Conv3d(base_channels * 2, base_channels * 4, stride=2, padding=1)
-        self.conv4 = Conv3d(base_channels * 4, base_channels * 4, padding=1)
+        self.conv4 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+                                            deformable_groups=2)
 
-        self.conv5 = Conv3d(base_channels * 4, base_channels * 8, stride=2, padding=1)
-        self.conv6 = Conv3d(base_channels * 8, base_channels * 8, padding=1)
-
-        self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
-
-        self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
-
-        self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
-
-        self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
+        self.conv5 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+                                            deformable_groups=2)
+        self.conv6 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+                                            deformable_groups=2)
 
     def forward(self, x):
         conv0 = self.conv0(x)
-        conv2 = self.conv2(self.conv1(conv0))
-        conv4 = self.conv4(self.conv3(conv2))
-        x = self.conv6(self.conv5(conv4))
-        x = conv4 + self.conv7(x)
-        x = conv2 + self.conv9(x)
-        x = conv0 + self.conv11(x)
-        x = self.prob(x)
+        conv0 = conv0.squeeze(1)
+        conv3 = self.conv3(self.conv2(self.conv1(conv0)))
+        x = self.conv6(self.conv5(self.conv4(conv3)))
         return x
+
 
 class RefineNet(nn.Module):
     def __init__(self):
@@ -643,6 +694,7 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
             total_loss += depth_loss_weights[stage_idx] * depth_loss
         else:
             total_loss += 1.0 * depth_loss
+    total_loss += inputs["total_loss_vol"]
 
     return total_loss, depth_loss
 
