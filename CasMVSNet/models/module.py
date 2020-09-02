@@ -6,6 +6,7 @@ import time
 import sys
 sys.path.append("..")
 from utils import local_pcd
+from models.losses import StereoFocalLoss
 
 def init_bn(module):
     if module.weight is not None:
@@ -653,6 +654,10 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
     total_loss = torch.tensor(0.0, dtype=torch.float32, device=mask_ms["stage1"].device, requires_grad=False)
 
+    stereo_focal_loss = StereoFocalLoss(focal_coefficient=1.5)
+    stage_infos = {"stage1": {"variance": 4.0, "loss_vol_weight": 10.0}, "stage2": {"variance": 2.0, "loss_vol_weight": 10.0}, "stage3": {"variance": 1.0, "loss_vol_weight": 20.0}}
+    depth_values = inputs["depth_candidates"]
+
     for (stage_inputs, stage_key) in [(inputs[k], k) for k in inputs.keys() if "stage" in k]:
         depth_est = stage_inputs["depth"]
         depth_gt = depth_gt_ms[stage_key]
@@ -666,7 +671,10 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
             total_loss += depth_loss_weights[stage_idx] * depth_loss
         else:
             total_loss += 1.0 * depth_loss
-    total_loss += inputs["total_loss_vol"]
+        depth_values_stage = depth_values[stage_key]
+        est_prob_vol = stage_inputs["prob_volume"]
+        total_loss += stage_infos[stage_key]["loss_vol_weight"] * stereo_focal_loss.loss_per_level(est_prob_vol, depth_gt.unsqueeze(1), stage_infos[stage_key]["variance"], depth_values_stage)
+    # total_loss += inputs["total_loss_vol"]
 
     return total_loss, depth_loss
 

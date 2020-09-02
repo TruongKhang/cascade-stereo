@@ -12,18 +12,36 @@ class DepthNet(nn.Module):
         super(DepthNet, self).__init__()
         vol_filtering_stage1 = nn.Sequential(nn.Conv2d(2*ndepths[0], ndepths[0], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[0]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[0], ndepths[0], kernel_size=3, bias=False, padding=1),
+                                    nn.BatchNorm2d(ndepths[0]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[0], ndepths[0], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[0]),
                                     nn.Sigmoid())
         vol_filtering_stage2 = nn.Sequential(nn.Conv2d(2*ndepths[1], ndepths[1], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[1]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[1], ndepths[1], kernel_size=3, bias=False, padding=1),
+                                    nn.BatchNorm2d(ndepths[1]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[1], ndepths[1], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[1]),
                                     nn.Sigmoid())
         vol_filtering_stage3 = nn.Sequential(nn.Conv2d(2*ndepths[2], ndepths[2], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[2]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[2], ndepths[2], kernel_size=3, bias=False, padding=1),
+                                    nn.BatchNorm2d(ndepths[2]),
+                                    nn.LeakyReLU(0.1, inplace=True),
+                                    nn.Conv2d(ndepths[2], ndepths[2], kernel_size=1, bias=False),
+                                    nn.BatchNorm2d(ndepths[2]),
                                     nn.Sigmoid())
         self.vol_filtering = nn.ModuleList([vol_filtering_stage1, vol_filtering_stage2, vol_filtering_stage3])
-        self.stereo_focal_loss = StereoFocalLoss()
+        # self.stereo_focal_loss = StereoFocalLoss(focal_coefficient=1.0)
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
-                prev_state=None, stage_idx=None, gt_depth=None, variance=1.0):
+                prev_state=None, stage_idx=None):
         proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(features) == len(proj_matrices), "Different number of images and projection matrices"
         assert depth_values.shape[1] == num_depth, "depth_values.shape[1]:{}  num_depth:{}".format(depth_values.shapep[1], num_depth)
@@ -74,7 +92,7 @@ class DepthNet(nn.Module):
         ref_proj_cur = ref_proj[:, 0].clone()
         ref_proj_cur[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
         ref_proj_prev, prev_costvol, prev_depth_values, is_begin = prev_state
-        loss = 0.0
+        # loss = 0.0
         cur_vol = prob_volume.detach().clone()
         if is_begin.sum() > 0:
             # print('is begining of video')
@@ -99,7 +117,7 @@ class DepthNet(nn.Module):
 
         itg_prob_volume = prob_volume + warped_costvol
         itg_prob_volume = F.normalize(itg_prob_volume, p=1, dim=1) #F.log_softmax(log_prob_volume, dim=1)
-        loss = self.stereo_focal_loss.loss_per_level(itg_prob_volume, gt_depth, variance, depth_values)
+        # loss = self.stereo_focal_loss.loss_per_level(itg_prob_volume, gt_depth, variance, depth_values)
         # prob_volume = prob_volume * warped_costvol
         # prob_volume = torch.exp(log_prob_volume)
 
@@ -122,7 +140,7 @@ class DepthNet(nn.Module):
         # final_depth = depth * photometric_confidence + prev_depth * prev_confidence
         # final_confidence = (photometric_confidence + prev_confidence) / 2
         return {"depth": depth, "photometric_confidence": photometric_confidence,
-                "prob_volume": itg_prob_volume, "loss_vol": loss}
+                "prob_volume": itg_prob_volume}
 
         # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
@@ -174,7 +192,7 @@ class CascadeMVSNet(nn.Module):
 
         self.DepthNet = DepthNet(self.ndepths)
 
-    def forward(self, imgs, proj_matrices, depth_values, prev_state=None, gt_depth=None):
+    def forward(self, imgs, proj_matrices, depth_values, prev_state=None):
 
         prev_ref_matrices, prev_costvol, prev_depth_values, is_begin = prev_state
 
@@ -202,7 +220,7 @@ class CascadeMVSNet(nn.Module):
             prev_costvol_stage = prev_costvol["stage{}".format(stage_idx + 1)]
             prev_ref_matrix = prev_ref_matrices["stage{}".format(stage_idx + 1)]
             prev_depth_values_stage = prev_depth_values["stage{}".format(stage_idx + 1)]
-            gt_depth_stage = gt_depth["stage{}".format(stage_idx + 1)].unsqueeze(1)
+            # gt_depth_stage = gt_depth["stage{}".format(stage_idx + 1)].unsqueeze(1)
 
             if depth is not None:
                 if self.grad_method == "detach":
@@ -233,21 +251,21 @@ class CascadeMVSNet(nn.Module):
                                           num_depth=self.ndepths[stage_idx],
                                           cost_regularization=self.cost_regularization if self.share_cr else self.cost_regularization[stage_idx],
                                           prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage, is_begin),
-                                          stage_idx=stage_idx, gt_depth=gt_depth_stage,
-                                          variance=self.stage_infos["stage{}".format(stage_idx + 1)]["variance"])
+                                          stage_idx=stage_idx) #, gt_depth=gt_depth_stage,
+                                          # variance=self.stage_infos["stage{}".format(stage_idx + 1)]["variance"])
 
             depth = outputs_stage['depth']
 
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
             outputs.update(outputs_stage)
             depth_range_values["stage{}".format(stage_idx + 1)] = depth_values_stage.detach()
-            total_loss += outputs_stage["loss_vol"]
+            # total_loss += outputs_stage["loss_vol"]
 
         # depth map refinement
         if self.refine:
             refined_depth = self.refine_network(torch.cat((imgs[:, 0], depth), 1))
             outputs["refined_depth"] = refined_depth
         outputs["depth_candidates"] = depth_range_values
-        outputs["total_loss_vol"] = total_loss
+        # outputs["total_loss_vol"] = total_loss
 
         return outputs

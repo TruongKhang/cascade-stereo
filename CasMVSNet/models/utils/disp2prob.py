@@ -52,7 +52,7 @@ class Disp2Prob(object):
         # self.end_disp = start_disp + maxDisp - 1
         # self.disp_sample_number = (maxDisp + dilation -1) // dilation
         self.index = depth_vol
-        self.eps = 1e-40
+        self.eps = 1e-20
 
     def getProb(self):
         # [BatchSize, 1, Height, Width]

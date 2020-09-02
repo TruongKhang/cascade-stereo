@@ -233,7 +233,7 @@ def train_sample(model, model_loss, optimizer, sample_cuda, prev_state, args):
     # prev_ref_matrices, itg_vol = prev_state
 
     outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
-                    prev_state, gt_depth=depth_gt_ms)
+                    prev_state) #, gt_depth=depth_gt_ms)
     depth_est = outputs["depth"]
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms,
@@ -287,7 +287,7 @@ def test_sample_depth(model, model_loss, sample_cuda, prev_state, args):
     mask = mask_ms["stage{}".format(num_stage)]
 
     outputs = model_eval(sample_cuda["imgs"], sample_cuda["proj_matrices"],
-                         sample_cuda["depth_values"], prev_state, depth_gt_ms)
+                         sample_cuda["depth_values"], prev_state) #, depth_gt_ms)
     depth_est = outputs["depth"]
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms, dlossw=[float(e) for e in args.dlossw.split(",") if e])
@@ -464,7 +464,7 @@ if __name__ == '__main__':
     MVSDataset = find_dataset_def(args.dataset)
     train_dataset = MVSDataset(args.trainpath, args.trainlist, "train", 3, args.numdepth, args.interval_scale,
                                shuffle=True, seq_size=20, batch_size=args.batch_size)
-    test_dataset = MVSDataset(args.testpath, args.testlist, "val", 5, args.numdepth, args.interval_scale,
+    test_dataset = MVSDataset(args.testpath, args.testlist, "val", 3, args.numdepth, args.interval_scale,
                               shuffle=False, seq_size=20, batch_size=1)
     #
     # if is_distributed:

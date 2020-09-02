@@ -43,7 +43,7 @@ parser.add_argument('--cr_base_chs', type=str, default="8,8,8", help='cost regul
 parser.add_argument('--grad_method', type=str, default="detach", choices=["detach", "undetach"], help='grad method')
 
 parser.add_argument('--interval_scale', type=float, required=True, help='the depth interval scale')
-parser.add_argument('--num_view', type=int, default=5, help='num of view')
+parser.add_argument('--num_view', type=int, default=3, help='num of view')
 parser.add_argument('--max_h', type=int, default=864, help='testing max h')
 parser.add_argument('--max_w', type=int, default=1152, help='testing max w')
 parser.add_argument('--fix_res', action='store_true', help='scene all using same res')
@@ -155,8 +155,9 @@ def save_scene_depth(testlist):
     # dataset, dataloader
     MVSDataset = find_dataset_def(args.dataset)
     test_dataset = MVSDataset(args.testpath, testlist, "test", args.num_view, args.numdepth, Interval_Scale,
-                              max_h=args.max_h, max_w=args.max_w, fix_res=args.fix_res)
-    TestImgLoader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=4, drop_last=False)
+                              max_h=args.max_h, max_w=args.max_w, fix_res=args.fix_res, batch_size=1, seq_size=20, shuffle=False)
+    sampler = torch.utils.data.SequentialSampler(test_dataset)
+    TestImgLoader = DataLoader(test_dataset, batch_size=1, shuffle=False, sampler=sampler, num_workers=4) #DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=4, drop_last=False)
 
     # model
     model = CascadeMVSNet(refine=False, ndepths=[int(nd) for nd in args.ndepths.split(",") if nd],
@@ -173,11 +174,40 @@ def save_scene_depth(testlist):
     model.cuda()
     model.eval()
 
+    itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
+    prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
+    depth_candidates = {'stage1': None, 'stage2': None, 'stage3': None}
+
     with torch.no_grad():
         for batch_idx, sample in enumerate(TestImgLoader):
             sample_cuda = tocuda(sample)
+            proj_matrices = sample_cuda['proj_matrices']
+            is_begin = sample_cuda['is_begin'].type(torch.uint8)
+            ref_matrices = {}
+            for stage in proj_matrices.keys():
+                ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
+                ref_proj_new = ref_proj_stage[:, 0].clone()
+                ref_proj_new[:, :3, :4] = torch.matmul(ref_proj_stage[:, 1, :3, :3], ref_proj_stage[:, 0, :3, :4])
+                if prev_proj_matrices[stage] is None:
+                    prev_proj_matrices[stage] = ref_proj_new
+                else:
+                    prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
+                ref_matrices[stage] = ref_proj_new
+                # D = sample['depth_values'].size(1)
+                if itg_state[stage] is None:
+                    # B, H, W = sample['depth'][stage].size()
+                    itg_state[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None} # torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
+                    depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
+                else:
+                    # D = itg_state[stage].size(1)
+                    itg_state[stage][is_begin] = 0
             start_time = time.time()
-            outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"])
+            outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"], (prev_proj_matrices, itg_state, depth_candidates, is_begin))
+            prev_proj_matrices = ref_matrices
+            depth_candidates = outputs["depth_candidates"]
+            for stage in itg_state.keys():
+                itg_state[stage] = outputs[stage]["prob_volume"].detach()
+
             end_time = time.time()
             outputs = tensor2numpy(outputs)
             del sample_cuda
@@ -456,7 +486,7 @@ if __name__ == '__main__':
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    save_depth(testlist)
+    # save_depth(testlist)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
     if args.filter_method != "gipuma":
