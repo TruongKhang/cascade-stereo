@@ -293,113 +293,10 @@ class Hourglass3d(nn.Module):
         return dconv1
 
 
-def homo_warping(src_fea, src_proj, ref_proj, depth_values):
-    # src_fea: [B, C, H, W]
-    # src_proj: [B, 4, 4]
-    # ref_proj: [B, 4, 4]
-    # depth_values: [B, Ndepth] o [B, Ndepth, H, W]
-    # out: [B, C, Ndepth, H, W]
-    batch, channels = src_fea.shape[0], src_fea.shape[1]
-    num_depth = depth_values.shape[1]
-    height, width = src_fea.shape[2], src_fea.shape[3]
-
-    with torch.no_grad():
-        proj = torch.matmul(src_proj, torch.inverse(ref_proj))
-        rot = proj[:, :3, :3]  # [B,3,3]
-        trans = proj[:, :3, 3:4]  # [B,3,1]
-
-        y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=src_fea.device),
-                               torch.arange(0, width, dtype=torch.float32, device=src_fea.device)])
-        y, x = y.contiguous(), x.contiguous()
-        y, x = y.view(height * width), x.view(height * width)
-        xyz = torch.stack((x, y, torch.ones_like(x)))  # [3, H*W]
-        xyz = torch.unsqueeze(xyz, 0).repeat(batch, 1, 1)  # [B, 3, H*W]
-        rot_xyz = torch.matmul(rot, xyz)  # [B, 3, H*W]
-        rot_depth_xyz = rot_xyz.unsqueeze(2).repeat(1, 1, num_depth, 1) * depth_values.view(batch, 1, num_depth,
-                                                                                            -1)  # [B, 3, Ndepth, H*W]
-        proj_xyz = rot_depth_xyz + trans.view(batch, 3, 1, 1)  # [B, 3, Ndepth, H*W]
-        proj_xy = proj_xyz[:, :2, :, :] / proj_xyz[:, 2:3, :, :]  # [B, 2, Ndepth, H*W]
-        proj_x_normalized = proj_xy[:, 0, :, :] / ((width - 1) / 2) - 1
-        proj_y_normalized = proj_xy[:, 1, :, :] / ((height - 1) / 2) - 1
-        proj_xy = torch.stack((proj_x_normalized, proj_y_normalized), dim=3)  # [B, Ndepth, H*W, 2]
-        grid = proj_xy
-
-    warped_src_fea = F.grid_sample(src_fea, grid.view(batch, num_depth * height, width, 2), mode='bilinear',
-                                   padding_mode='zeros')
-    warped_src_fea = warped_src_fea.view(batch, channels, num_depth, height, width)
-
-    return warped_src_fea
 
 
-def resample_vol(src_vol, src_proj, ref_proj, depth_values, prev_depth_values=None, begin_video=None):
-    # src_vol: [B, Ndepth, H, W]
-    # src_proj: [B, 4, 4]
-    # ref_proj: [B, 4, 4]
-    # depth_values: [B, Ndepth] o [B, Ndepth, H, W]
-    # out: [B, Ndepth, H, W]
-    batch = src_vol.shape[0]
-    num_depth = depth_values.shape[1]
-    height, width = src_vol.shape[2], src_vol.shape[3]
 
-    if prev_depth_values is None:
-        prev_depth_values = depth_values
-    elif begin_video is not None:
-        prev_depth_values[begin_video] = depth_values[begin_video]
-    depth_min = prev_depth_values[:, 0] # [B, H, W]
-    depth_max = prev_depth_values[:, -1] # [B, H, W]
-    depth_half = (depth_max + depth_min) * .5
-    depth_radius = (depth_max - depth_min) * .5
-    depth_half, depth_radius = depth_half.view(batch, 1, -1), depth_radius.view(batch, 1, -1)
 
-    with torch.no_grad():
-        proj = torch.matmul(src_proj, torch.inverse(ref_proj))
-        # print(proj.size())
-        rot = proj[:, :3, :3]  # [B,3,3]
-        trans = proj[:, :3, 3:4]  # [B,3,1]
-
-        y, x = torch.meshgrid([torch.arange(0, height, dtype=torch.float32, device=src_vol.device),
-                               torch.arange(0, width, dtype=torch.float32, device=src_vol.device)])
-        y, x = y.contiguous(), x.contiguous()
-        y, x = y.view(height * width), x.view(height * width)
-        xyz = torch.stack((x, y, torch.ones_like(x)))  # [3, H*W]
-        xyz = torch.unsqueeze(xyz, 0).repeat(batch, 1, 1)
-        # [B, 3, H*W]
-        rot_xyz = torch.matmul(rot, xyz)  # [B, 3, H*W]
-        rot_depth_xyz = rot_xyz.unsqueeze(2).repeat(1, 1, num_depth, 1) * depth_values.view(batch, 1, num_depth,
-                                                                                            -1)  # [B, 3, Ndepth, H*W]
-        proj_xyz = rot_depth_xyz + trans.view(batch, 3, 1, 1)  # [B, 3, Ndepth, H*W]
-        proj_xy = proj_xyz[:, :2, :, :] / proj_xyz[:, 2:3, :, :]  # [B, 2, Ndepth, H*W]
-        proj_x_normalized = proj_xy[:, 0, :, :] / ((width - 1) / 2) - 1
-        proj_y_normalized = proj_xy[:, 1, :, :] / ((height - 1) / 2) - 1
-        proj_z_normalized = (proj_xyz[:, 2, :, :] - depth_half) / depth_radius  # [B, Ndepth, H*W]
-        proj_xyz_normalized = torch.stack((proj_x_normalized, proj_y_normalized, proj_z_normalized), dim=3)  # [B, Ndepth, H*W, 3]
-        grid = proj_xyz_normalized
-
-    src_vol_new = set_vol_border(src_vol.unsqueeze(1), 0) #math.log(1.0/num_depth))
-    warped_src_vol = F.grid_sample(src_vol_new, grid.view(batch, num_depth, height, width, 3),
-                                   mode='bilinear',
-                                   padding_mode='border')
-    warped_src_vol = warped_src_vol.squeeze(1).view(batch, num_depth, height, width)
-    # warped_src_vol = F.normalize(warped_src_vol, p=1, dim=1) #F.log_softmax(warped_src_vol, dim=1)
-    # print(warped_src_vol.min(), warped_src_vol.max())
-
-    return warped_src_vol #warped_src_vol.clamp(min=-1000, max=0)
-
-def set_vol_border(vol, border_val):
-    '''
-    inputs:
-    vol - a torch tensor in 3D: N x C x D x H x W
-    border_val - a float, the border value
-    '''
-    vol_ = vol + 0.
-    vol_[:, :, 0, :, :] = border_val
-    vol_[:, :, :, 0, :] = border_val
-    vol_[:, :, :, :, 0] = border_val
-    vol_[:, :, -1, :, :] = border_val
-    vol_[:, :, :, -1, :] = border_val
-    vol_[:, :, :, :, -1] = border_val
-
-    return vol_
 
 # def resample_vol_cuda(src_vol, src_proj, ref_proj, cam_intrinsic=None,
 #                       d_candi=None, d_candi_new=None,
@@ -594,63 +491,64 @@ class FeatureNet(nn.Module):
 
         return outputs
 
-# class CostRegNet(nn.Module):
-#     def __init__(self, in_channels, base_channels):
-#         super(CostRegNet, self).__init__()
-#         self.conv0 = Conv3d(in_channels, base_channels, padding=1)
-#
-#         self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
-#         self.conv2 = Conv3d(base_channels * 2, base_channels * 2, padding=1)
-#
-#         self.conv3 = Conv3d(base_channels * 2, base_channels * 4, stride=2, padding=1)
-#         self.conv4 = Conv3d(base_channels * 4, base_channels * 4, padding=1)
-#
-#         self.conv5 = Conv3d(base_channels * 4, base_channels * 8, stride=2, padding=1)
-#         self.conv6 = Conv3d(base_channels * 8, base_channels * 8, padding=1)
-#
-#         self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
-#
-#         self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
-#
-#         self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
-#
-#         self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
-#
-#     def forward(self, x):
-#         conv0 = self.conv0(x)
-#         conv2 = self.conv2(self.conv1(conv0))
-#         conv4 = self.conv4(self.conv3(conv2))
-#         x = self.conv6(self.conv5(conv4))
-#         x = conv4 + self.conv7(x)
-#         x = conv2 + self.conv9(x)
-#         x = conv0 + self.conv11(x)
-#         x = self.prob(x)
-#         return x
-
 
 class CostRegNet(nn.Module):
-    def __init__(self, in_channels, num_candidates):
+    def __init__(self, in_channels, base_channels):
         super(CostRegNet, self).__init__()
-        self.conv0 = Conv3d(in_channels, 1, padding=1)
+        self.conv0 = Conv3d(in_channels, base_channels, padding=1)
 
-        self.conv1 = SimpleBottleneck(num_candidates, num_candidates)
-        self.conv2 = SimpleBottleneck(num_candidates, num_candidates)
-        self.conv3 = SimpleBottleneck(num_candidates, num_candidates)
+        self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
+        self.conv2 = Conv3d(base_channels * 2, base_channels * 2, padding=1)
 
-        self.conv4 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
-                                            deformable_groups=2)
+        self.conv3 = Conv3d(base_channels * 2, base_channels * 4, stride=2, padding=1)
+        self.conv4 = Conv3d(base_channels * 4, base_channels * 4, padding=1)
 
-        self.conv5 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
-                                            deformable_groups=2)
-        self.conv6 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
-                                            deformable_groups=2)
+        self.conv5 = Conv3d(base_channels * 4, base_channels * 8, stride=2, padding=1)
+        self.conv6 = Conv3d(base_channels * 8, base_channels * 8, padding=1)
+
+        self.conv7 = Deconv3d(base_channels * 8, base_channels * 4, stride=2, padding=1, output_padding=1)
+
+        self.conv9 = Deconv3d(base_channels * 4, base_channels * 2, stride=2, padding=1, output_padding=1)
+
+        self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
+
+        self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
 
     def forward(self, x):
         conv0 = self.conv0(x)
-        conv0 = conv0.squeeze(1)
-        conv3 = self.conv3(self.conv2(self.conv1(conv0)))
-        x = self.conv6(self.conv5(self.conv4(conv3)))
+        conv2 = self.conv2(self.conv1(conv0))
+        conv4 = self.conv4(self.conv3(conv2))
+        x = self.conv6(self.conv5(conv4))
+        x = conv4 + self.conv7(x)
+        x = conv2 + self.conv9(x)
+        x = conv0 + self.conv11(x)
+        x = self.prob(x)
         return x
+
+
+# class CostRegNet(nn.Module):
+#     def __init__(self, in_channels, num_candidates):
+#         super(CostRegNet, self).__init__()
+#         self.conv0 = Conv3d(in_channels, 1, padding=1)
+#
+#         self.conv1 = SimpleBottleneck(num_candidates, num_candidates)
+#         self.conv2 = SimpleBottleneck(num_candidates, num_candidates)
+#         self.conv3 = SimpleBottleneck(num_candidates, num_candidates)
+#
+#         self.conv4 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+#                                             deformable_groups=2)
+#
+#         self.conv5 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+#                                             deformable_groups=2)
+#         self.conv6 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
+#                                             deformable_groups=2)
+#
+#     def forward(self, x):
+#         conv0 = self.conv0(x)
+#         conv0 = conv0.squeeze(1)
+#         conv3 = self.conv3(self.conv2(self.conv1(conv0)))
+#         x = self.conv6(self.conv5(self.conv4(conv3)))
+#         return x
 
 
 class RefineNet(nn.Module):
@@ -676,34 +574,7 @@ def depth_regression(p, depth_values):
 
     return depth
 
-def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
-    depth_loss_weights = kwargs.get("dlossw", None)
 
-    total_loss = torch.tensor(0.0, dtype=torch.float32, device=mask_ms["stage1"].device, requires_grad=False)
-
-    stereo_focal_loss = StereoFocalLoss(focal_coefficient=1.5)
-    stage_infos = {"stage1": {"variance": 4.0, "loss_vol_weight": 10.0}, "stage2": {"variance": 2.0, "loss_vol_weight": 10.0}, "stage3": {"variance": 1.0, "loss_vol_weight": 20.0}}
-    depth_values = inputs["depth_candidates"]
-
-    for (stage_inputs, stage_key) in [(inputs[k], k) for k in inputs.keys() if "stage" in k]:
-        depth_est = stage_inputs["depth"]
-        depth_gt = depth_gt_ms[stage_key]
-        mask = mask_ms[stage_key]
-        mask = mask > 0.5
-
-        depth_loss = F.smooth_l1_loss(depth_est[mask], depth_gt[mask], reduction='mean')
-
-        if depth_loss_weights is not None:
-            stage_idx = int(stage_key.replace("stage", "")) - 1
-            total_loss += depth_loss_weights[stage_idx] * depth_loss
-        else:
-            total_loss += 1.0 * depth_loss
-        depth_values_stage = depth_values[stage_key]
-        est_prob_vol = stage_inputs["prob_volume"]
-        total_loss += stage_infos[stage_key]["loss_vol_weight"] * stereo_focal_loss.loss_per_level(est_prob_vol, depth_gt.unsqueeze(1), stage_infos[stage_key]["variance"], depth_values_stage)
-    # total_loss += inputs["total_loss_vol"]
-
-    return total_loss, depth_loss
 
 
 def get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, max_depth=192.0, min_depth=0.0):
@@ -790,19 +661,19 @@ if __name__ == "__main__":
     ref_proj_new = ref_proj[:, 0].clone()
     ref_proj_new[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
 
-    warped_imgs = homo_warping(src_imgs[0], src_proj_new, ref_proj_new, depth_values)
-
-    ref_img_np = ref_img.permute([0, 2, 3, 1])[0].detach().cpu().numpy()[:, :, ::-1] * 255
-    cv2.imwrite('../tmp/ref.png', ref_img_np)
-    cv2.imwrite('../tmp/src.png', src_imgs[0].permute([0, 2, 3, 1])[0].detach().cpu().numpy()[:, :, ::-1] * 255)
-
-    for i in range(warped_imgs.shape[2]):
-        warped_img = warped_imgs[:, :, i, :, :].permute([0, 2, 3, 1]).contiguous()
-        img_np = warped_img[0].detach().cpu().numpy()
-        img_np = img_np[:, :, ::-1] * 255
-
-        alpha = 0.5
-        beta = 1 - alpha
-        gamma = 0
-        img_add = cv2.addWeighted(ref_img_np, alpha, img_np, beta, gamma)
-        cv2.imwrite('../tmp/tmp{}.png'.format(i), np.hstack([ref_img_np, img_np, img_add])) #* ratio + img_np*(1-ratio)]))
+    # warped_imgs = homo_warping(src_imgs[0], src_proj_new, ref_proj_new, depth_values)
+    #
+    # ref_img_np = ref_img.permute([0, 2, 3, 1])[0].detach().cpu().numpy()[:, :, ::-1] * 255
+    # cv2.imwrite('../tmp/ref.png', ref_img_np)
+    # cv2.imwrite('../tmp/src.png', src_imgs[0].permute([0, 2, 3, 1])[0].detach().cpu().numpy()[:, :, ::-1] * 255)
+    #
+    # for i in range(warped_imgs.shape[2]):
+    #     warped_img = warped_imgs[:, :, i, :, :].permute([0, 2, 3, 1]).contiguous()
+    #     img_np = warped_img[0].detach().cpu().numpy()
+    #     img_np = img_np[:, :, ::-1] * 255
+    #
+    #     alpha = 0.5
+    #     beta = 1 - alpha
+    #     gamma = 0
+    #     img_add = cv2.addWeighted(ref_img_np, alpha, img_np, beta, gamma)
+    #     cv2.imwrite('../tmp/tmp{}.png'.format(i), np.hstack([ref_img_np, img_np, img_add])) #* ratio + img_np*(1-ratio)]))

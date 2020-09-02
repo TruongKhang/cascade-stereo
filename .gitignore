@@ -13,3 +13,5 @@ CasMVSNet/checkpoints*
 CasMVSNet/lists/dtu/*
 CasMVSNet/checkpoints1/
 CasMVSNet/pretrained
+CasMVSNet/eval_out
+fusibile

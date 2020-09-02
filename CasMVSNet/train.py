@@ -9,7 +9,7 @@ from tensorboardX import SummaryWriter
 from datasets import find_dataset_def
 from models import *
 from utils import *
-from models.module import resample_vol
+from models.losses import cas_mvsnet_loss
 import torch.distributed as dist
 import math
 
@@ -94,6 +94,7 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
             proj_matrices = sample['proj_matrices']
             is_begin = sample['is_begin'].type(torch.uint8)
             ref_matrices = {}
+
             for stage in proj_matrices.keys():
                 ref_proj_stage = torch.unbind(proj_matrices[stage], dim=1)[0]
                 ref_proj_new = ref_proj_stage[:, 0].clone()
@@ -105,19 +106,21 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                 ref_matrices[stage] = ref_proj_new
                 # D = sample['depth_values'].size(1)
                 if itg_state[stage] is None:
-                    # B, H, W = sample['depth'][stage].size()
-                    itg_state[stage] = None #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
+                    B, H, W = sample['depth'][stage].size()
+                    itg_state[stage] = torch.zeros((B, H, W), dtype=torch.float32), torch.zeros((B, H, W), dtype=torch.float32)
                     depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
                 else:
                     # D = itg_state[stage].size(1)
-                    itg_state[stage][is_begin] = 0 #math.log(1.0 / D)
+                    itg_state[stage][0][is_begin] = 0 #math.log(1.0 / D)
+                    itg_state[stage][1][is_begin] = 0
 
             loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = train_sample(model, model_loss, optimizer,
                                                                                           sample, (prev_proj_matrices, itg_state, depth_candidates, is_begin), args)
 
             prev_proj_matrices = ref_matrices
-            for stage in itg_state.keys():
-                itg_state[stage] = itg_vol[stage].detach()
+            itg_state = itg_vol
+            # for stage in itg_state.keys():
+            #     itg_state[stage] = itg_vol[stage].detach()
 
             lr_scheduler.step()
             if (not is_distributed) or (dist.get_rank() == 0):
@@ -169,19 +172,21 @@ def train(model, model_loss, optimizer, TrainImgLoader, TestImgLoader, start_epo
                     ref_matrices[stage] = ref_proj_new
                     # D = sample['depth_values'].size(1)
                     if itg_state[stage] is None:
-                        # B, H, W = sample['depth'][stage].size()
-                        itg_state[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None} # torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
+                        B, H, W = sample['depth'][stage].size()
+                        itg_state[stage] = torch.zeros((B, H, W), dtype=torch.float32), torch.zeros((B, H, W), dtype=torch.float32)
                         depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
                     else:
                         # D = itg_state[stage].size(1)
-                        itg_state[stage][is_begin] = 0 #math.log(1.0 / D)
+                        itg_state[stage][0][is_begin] = 0  # math.log(1.0 / D)
+                        itg_state[stage][1][is_begin] = 0
 
                 loss, scalar_outputs, image_outputs, itg_vol, depth_candidates = test_sample_depth(model, model_loss, sample,
                                                                                  (prev_proj_matrices, itg_state, depth_candidates, is_begin), args)
 
                 prev_proj_matrices = ref_matrices
-                for stage in itg_state.keys():
-                    itg_state[stage] = itg_vol[stage].detach()
+                itg_state = itg_vol
+                # for stage in itg_state.keys():
+                #     itg_state[stage] = itg_vol[stage].detach()
 
                 if (not is_distributed) or (dist.get_rank() == 0):
                     if do_summary:
@@ -261,13 +266,15 @@ def train_sample(model, model_loss, optimizer, sample_cuda, prev_state, args):
                      "mask": sample_cuda["mask"]["stage1"].cpu(),
                      "errormap": (depth_est - depth_gt).abs() * mask,
                      }
-    prob_vols = {stage: outputs[stage]['prob_volume'] for stage in outputs.keys() if 'stage' in stage}
+    # prob_vols = {stage: outputs[stage]['prob_volume'] for stage in outputs.keys() if 'stage' in stage}
+    cur_state = {stage: (outputs[stage]['depth'].detach(), outputs[stage]['photometric_confidence'].detach())
+                 for stage in outputs.keys() if 'stage' in stage}
 
     if is_distributed:
         scalar_outputs = reduce_scalar_outputs(scalar_outputs)
 
     return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), \
-           prob_vols, outputs["depth_candidates"]
+           cur_state, outputs["depth_candidates"]
 
 
 @make_nograd_func
@@ -316,13 +323,15 @@ def test_sample_depth(model, model_loss, sample_cuda, prev_state, args):
                      "mask": sample_cuda["mask"]["stage1"].cpu(),
                      "errormap": (depth_est - depth_gt).abs() * mask}
 
-    prob_vols = {stage: outputs[stage]['prob_volume'] for stage in outputs.keys() if 'stage' in stage}
+    # prob_vols = {stage: outputs[stage]['prob_volume'] for stage in outputs.keys() if 'stage' in stage}
+    cur_state = {stage: (outputs[stage]['depth'].detach(), outputs[stage]['photometric_confidence'].detach())
+                 for stage in outputs.keys() if 'stage' in stage}
 
     if is_distributed:
         scalar_outputs = reduce_scalar_outputs(scalar_outputs)
 
     return tensor2float(scalar_outputs["loss"]), tensor2float(scalar_outputs), tensor2numpy(image_outputs), \
-           prob_vols, outputs["depth_candidates"]
+           cur_state, outputs["depth_candidates"]
 
 
 def profile():
