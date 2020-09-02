@@ -10,5 +10,6 @@ events.out.*
 tmp*/
 CasMVSNet/results/
 CasMVSNet/checkpoints*
+CasMVSNet/lists/dtu/*
 CasMVSNet/checkpoints1/
 CasMVSNet/pretrained
