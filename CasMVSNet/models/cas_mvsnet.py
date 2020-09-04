@@ -98,29 +98,28 @@ class DepthNet(nn.Module):
         warped_depth, warped_cfd = homo_warping_2D(prev_depth.unsqueeze(1), prev_cfd.unsqueeze(1), ref_proj_prev, ref_proj_cur)
         std = (1 - warped_cfd) + 1.2
         mask = (warped_depth > 0.5).float()
-        warped_costvol = LaplaceDisp2Prob(depth_values, warped_depth, variance=std).getProb() * mask
-        # loss = 0.0
+        warped_costvol = LaplaceDisp2Prob(depth_values, warped_depth, variance=std).getProb()
         cur_vol = prob_volume.detach().clone()
         if is_begin.sum() > 0:
             # print('is begining of video')
-            # B, D, H, W = prob_volume.size() #log_prob_volume.size()
+            B, D, H, W = prob_volume.size() #log_prob_volume.size()
             # prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda() #torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D).cuda()
             # if prev_costvol is None:
             #     prev_costvol = torch.zeros((B, D, H, W), dtype=torch.float32).cuda()
             # warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
             #                                 prev_depth_values=prev_depth_values, begin_video=is_begin)
-            warped_costvol[is_begin] = 0
-        #     if is_begin.sum() < B:
-        #         input_vol = torch.cat((cur_vol[~is_begin], warped_costvol[~is_begin]), dim=1)
-        #         weight_vol = self.vol_filtering[stage_idx](input_vol)
-        #         warped_costvol[~is_begin] = warped_costvol[~is_begin] * weight_vol
-        # else:
+            warped_costvol[is_begin] = 0 #1.0 / D
+            if is_begin.sum() < B:
+                input_vol = torch.cat((cur_vol[~is_begin], warped_costvol[~is_begin]), dim=1)
+                weight_vol = self.vol_filtering[stage_idx](input_vol)
+                warped_costvol[~is_begin] = warped_costvol[~is_begin] * weight_vol
+        else:
         #     # warped_costvol = resample_vol(prev_costvol, ref_proj_prev, ref_proj_cur, depth_values,
         #     #                               prev_depth_values=prev_depth_values, begin_video=is_begin)
-        #     weight_vol = self.vol_filtering[stage_idx](torch.cat((cur_vol, warped_costvol), dim=1))
-        #     warped_costvol = warped_costvol * weight_vol
+            weight_vol = self.vol_filtering[stage_idx](torch.cat((cur_vol, warped_costvol), dim=1))
+            warped_costvol = warped_costvol * weight_vol
 
-        itg_prob_volume = prob_volume + warped_costvol
+        itg_prob_volume = prob_volume + warped_costvol * mask
         itg_prob_volume = F.normalize(itg_prob_volume, p=1, dim=1) #F.log_softmax(log_prob_volume, dim=1)
         # loss = self.stereo_focal_loss.loss_per_level(itg_prob_volume, gt_depth, variance, depth_values)
         # prob_volume = prob_volume * warped_costvol
@@ -144,8 +143,7 @@ class DepthNet(nn.Module):
         # prev_confidence = torch.gather(prev_prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
         # final_depth = depth * photometric_confidence + prev_depth * prev_confidence
         # final_confidence = (photometric_confidence + prev_confidence) / 2
-        return {"depth": depth, "photometric_confidence": photometric_confidence} #,
-                # "prob_volume": itg_prob_volume}
+        return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": itg_prob_volume}
 
         # return {"depth": depth,  "photometric_confidence": photometric_confidence}
 
