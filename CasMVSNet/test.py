@@ -43,7 +43,7 @@ parser.add_argument('--cr_base_chs', type=str, default="8,8,8", help='cost regul
 parser.add_argument('--grad_method', type=str, default="detach", choices=["detach", "undetach"], help='grad method')
 
 parser.add_argument('--interval_scale', type=float, required=True, help='the depth interval scale')
-parser.add_argument('--num_view', type=int, default=3, help='num of view')
+parser.add_argument('--num_view', type=int, default=5, help='num of view')
 parser.add_argument('--max_h', type=int, default=864, help='testing max h')
 parser.add_argument('--max_w', type=int, default=1152, help='testing max w')
 parser.add_argument('--fix_res', action='store_true', help='scene all using same res')
@@ -56,11 +56,11 @@ parser.add_argument('--filter_method', type=str, default='normal', choices=["gip
 
 #filter
 parser.add_argument('--conf', type=float, default=0.9, help='prob confidence')
-parser.add_argument('--thres_view', type=int, default=5, help='threshold of num view')
+parser.add_argument('--thres_view', type=int, default=3, help='threshold of num view')
 
 #filter by gimupa
 parser.add_argument('--fusibile_exe_path', type=str, default='../fusibile/fusibile')
-parser.add_argument('--prob_threshold', type=float, default='0.9')
+parser.add_argument('--prob_threshold', type=float, default='0.7')
 parser.add_argument('--disp_threshold', type=float, default='0.25')
 parser.add_argument('--num_consistent', type=float, default='4')
 
@@ -177,6 +177,7 @@ def save_scene_depth(testlist):
     itg_state = {'stage1': None, 'stage2': None, 'stage3': None}
     prev_proj_matrices = {'stage1': None, 'stage2': None, 'stage3': None}
     depth_candidates = {'stage1': None, 'stage2': None, 'stage3': None}
+    scale = {"stage1": 4, "stage2": 2, "stage3": 1}
 
     with torch.no_grad():
         for batch_idx, sample in enumerate(TestImgLoader):
@@ -193,20 +194,23 @@ def save_scene_depth(testlist):
                 else:
                     prev_proj_matrices[stage][is_begin] = ref_proj_new[is_begin]
                 ref_matrices[stage] = ref_proj_new
-                # D = sample['depth_values'].size(1)
+                B = sample['imgs'].size(0)
+                _, H, W = sample['imgs'][0][0].size()
                 if itg_state[stage] is None:
-                    # B, H, W = sample['depth'][stage].size()
-                    itg_state[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None} # torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
-                    depth_candidates[stage] = None #{'stage1': None, 'stage2': None, 'stage3': None}
+                    H_stage, W_stage = H // scale[stage], W // scale[stage]
+                    itg_state[stage] = torch.zeros((B, H_stage, W_stage), dtype=torch.float32), torch.zeros((B, H_stage, W_stage), dtype=torch.float32) #{'stage1': None, 'stage2': None, 'stage3': None} # torch.log(torch.ones((B, D, H, W), dtype=torch.float32) / D)
+                    depth_candidates[stage] = None
                 else:
                     # D = itg_state[stage].size(1)
-                    itg_state[stage][is_begin] = 0
+                    itg_state[stage][0][is_begin] = 0
+                    itg_state[stage][1][is_begin] = 0
             start_time = time.time()
             outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"], (prev_proj_matrices, itg_state, depth_candidates, is_begin))
             prev_proj_matrices = ref_matrices
             depth_candidates = outputs["depth_candidates"]
-            for stage in itg_state.keys():
-                itg_state[stage] = outputs[stage]["prob_volume"].detach()
+            # for stage in itg_state.keys():
+            #    itg_state[stage] = outputs[stage]["prob_volume"].detach()
+            itg_state = {stage: (outputs[stage]['depth'].detach(), outputs[stage]['photometric_confidence'].detach()) for stage in outputs.keys() if 'stage' in stage}
 
             end_time = time.time()
             outputs = tensor2numpy(outputs)
@@ -486,7 +490,7 @@ if __name__ == '__main__':
             if not args.testpath_single_scene else [os.path.basename(args.testpath_single_scene)]
 
     # step1. save all the depth maps and the masks in outputs directory
-    # save_depth(testlist)
+    save_depth(testlist)
 
     # step2. filter saved depth maps with photometric confidence maps and geometric constraints
     if args.filter_method != "gipuma":
