@@ -114,8 +114,8 @@ class LaplaceDisp2Prob(Disp2Prob):
 
 class GaussianDisp2Prob(Disp2Prob):
     # variance is the variance of the Gaussian distribution
-    def __init__(self, maxDisp, gtDisp, variance=1, start_disp=0, dilation=1):
-        super(GaussianDisp2Prob, self).__init__(maxDisp, gtDisp, start_disp, dilation)
+    def __init__(self, depth_vol, gtDisp, variance=1, start_disp=0, dilation=1):
+        super(GaussianDisp2Prob, self).__init__(depth_vol, gtDisp, start_disp, dilation)
         self.variance = variance
 
     def calProb(self):
@@ -129,8 +129,8 @@ class GaussianDisp2Prob(Disp2Prob):
 
 class OneHotDisp2Prob(Disp2Prob):
     # variance is the variance of the OneHot distribution
-    def __init__(self, maxDisp, gtDisp, variance=1, start_disp=0, dilation=1):
-        super(OneHotDisp2Prob, self).__init__(maxDisp, gtDisp, start_disp, dilation)
+    def __init__(self, depth_vol, gtDisp, variance=1, start_disp=0, dilation=1):
+        super(OneHotDisp2Prob, self).__init__(depth_vol, gtDisp, start_disp, dilation)
         self.variance = variance
 
     def getProb(self):

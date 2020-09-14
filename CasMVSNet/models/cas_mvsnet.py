@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from .module import *
 from models.losses import StereoFocalLoss
 from .utils.warping import homo_warping_3D, resample_vol, homo_warping_2D
-from .utils.disp2prob import LaplaceDisp2Prob
+from .utils.disp2prob import LaplaceDisp2Prob, OneHotDisp2Prob, GaussianDisp2Prob
 
 
 Align_Corners_Range = False
@@ -191,7 +191,8 @@ class CascadeMVSNet(nn.Module):
             self.refine_network = RefineNet()
 
         self.DepthNet = DepthNet(self.ndepths)
-        self.cvae = GenerationNet(input_channels=5, output_channels=self.cr_base_chs[-1])
+        in_channels = self.ndepths[-1] + self.cr_base_chs[-1]
+        self.cvae = GenerationNet(input_channels=in_channels, output_channels=self.cr_base_chs[-1])
 
     def forward(self, imgs, proj_matrices, depth_values, prev_state=None, gt_depth=None, gt_mask=None):
 
@@ -261,16 +262,19 @@ class CascadeMVSNet(nn.Module):
                 prev_depth, prev_cfd = prev_costvol_stage
                 warped_depth, warped_cfd = homo_warping_2D(prev_depth.unsqueeze(1), prev_cfd.unsqueeze(1),
                                                            prev_ref_matrix, cur_ref_proj)
-
+                std = (1 - warped_cfd) * 2 + 1.0
+                warped_costvol = LaplaceDisp2Prob(depth_values_stage, warped_depth, variance=std).getProb()
+                gt_costvol = OneHotDisp2Prob(depth_values_stage, gt_depth).getProb()
+                feature_img = features_stage[0].detach()
                 if self.training:
-                    self.cvae(imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask)
+                    self.cvae(feature_img, warped_costvol, gt_costvol) # imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask)
                     recons_vol, kl_term = self.cvae.elbo()
                     reg_term = l2_regularisation(self.cvae.prior) + l2_regularisation(self.cvae.posterior) + l2_regularisation(self.cvae.generator)
                     kl_term += 1e-3 * reg_term
                     # print("Reconstruction volume: ", recons_vol.dtype, recons_vol.size())
                     # print("KL term: ", kl_term.dtype, kl_term)
                 else:
-                    self.cvae(imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask, training=False)
+                    self.cvae(feature_img, warped_costvol, training=False) #imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask, training=False)
                     recons_vol, kl_term = self.cvae.sample(testing=True), 0.0
                 itg_cost_vol = outputs_stage["prob_volume"] + recons_vol
                 itg_cost_vol = F.normalize(itg_cost_vol, p=1, dim=1)

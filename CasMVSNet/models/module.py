@@ -761,14 +761,14 @@ class GenerationNet(nn.Module):
         self.posterior_latent_space = None
         self.prior_latent_space = None
 
-    def forward(self, img, prior_depth, conf, gt_depth=None, gt_conf=None, training=True):
+    def forward(self, img_feature, costvol, gt_costvol=None, training=True): #img, prior_depth, conf, gt_depth=None, gt_conf=None, training=True):
         """
         Construct prior latent space for patch and run patch through UNet,
         in case training is True also construct posterior latent space
         """
         if training:
-            self.posterior_latent_space = self.posterior.forward(torch.cat((img, gt_depth, gt_conf), dim=1))
-        self.prior_latent_space = self.prior.forward(torch.cat((img, prior_depth, conf), dim=1))
+            self.posterior_latent_space = self.posterior.forward(torch.cat((img_feature, gt_costvol), dim=1)) #, gt_depth, gt_conf), dim=1))
+        self.prior_latent_space = self.prior.forward(torch.cat((img_feature, costvol), dim=1)) #prior_depth, conf), dim=1))
         # self.unet_features = self.unet.forward(patch, False)
 
     def sample(self, testing=False):
