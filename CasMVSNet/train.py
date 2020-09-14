@@ -238,7 +238,7 @@ def train_sample(model, model_loss, optimizer, sample_cuda, prev_state, args):
     # prev_ref_matrices, itg_vol = prev_state
 
     outputs = model(sample_cuda["imgs"], sample_cuda["proj_matrices"], sample_cuda["depth_values"],
-                    prev_state, depth_gt.unsqueeze(1))
+                    prev_state, depth_gt.unsqueeze(1), (mask > 0.5).float().unsqueeze(1))
     depth_est = outputs["depth"]
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms,
@@ -294,7 +294,8 @@ def test_sample_depth(model, model_loss, sample_cuda, prev_state, args):
     mask = mask_ms["stage{}".format(num_stage)]
 
     outputs = model_eval(sample_cuda["imgs"], sample_cuda["proj_matrices"],
-                         sample_cuda["depth_values"], prev_state, depth_gt.unsqueeze(1))
+                         sample_cuda["depth_values"], prev_state, depth_gt.unsqueeze(1),
+                         (mask > 0.5).float().unsqueeze(1))
     depth_est = outputs["depth"]
 
     loss, depth_loss = model_loss(outputs, depth_gt_ms, mask_ms, dlossw=[float(e) for e in args.dlossw.split(",") if e])

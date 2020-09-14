@@ -193,7 +193,7 @@ class CascadeMVSNet(nn.Module):
         self.DepthNet = DepthNet(self.ndepths)
         self.cvae = GenerationNet(input_channels=5, output_channels=self.cr_base_chs[-1])
 
-    def forward(self, imgs, proj_matrices, depth_values, prev_state=None, gt_depth=None):
+    def forward(self, imgs, proj_matrices, depth_values, prev_state=None, gt_depth=None, gt_mask=None):
 
         prev_ref_matrices, prev_costvol, prev_depth_values, is_begin = prev_state
 
@@ -261,10 +261,12 @@ class CascadeMVSNet(nn.Module):
                 prev_depth, prev_cfd = prev_costvol_stage
                 warped_depth, warped_cfd = homo_warping_2D(prev_depth.unsqueeze(1), prev_cfd.unsqueeze(1),
                                                            prev_ref_matrix, cur_ref_proj)
-                self.cvae(imgs[:, 0], warped_depth, warped_cfd, gt_depth, (gt_depth > 0.5).float())
+
                 if self.training:
+                    self.cvae(imgs[:, 0], warped_depth, warped_cfd, gt_depth * gt_mask, gt_mask)
                     recons_vol, kl_term = self.cvae.elbo()
                 else:
+                    self.cvae(imgs[:, 0], warped_depth, warped_cfd, gt_depth * gt_mask, gt_mask, training=False)
                     recons_vol, kl_term = self.cvae.sample(testing=True), 0.0
                 itg_cost_vol = outputs_stage["prob_volume"] + recons_vol
                 itg_cost_vol = F.normalize(itg_cost_vol, p=1, dim=1)

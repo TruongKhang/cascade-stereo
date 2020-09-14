@@ -651,7 +651,6 @@ class Decoder(nn.Module):
 
     def forward(self, inputs):
         output = self.layers(inputs)
-        print(output.size())
         output = self.final_layer(output)
         return output
 
