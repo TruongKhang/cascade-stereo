@@ -2,12 +2,12 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Normal, Independent, kl
 import time
 import sys
 sys.path.append("..")
-from utils import local_pcd
+# from utils import local_pcd
 
-from models.losses import StereoFocalLoss
 
 def init_bn(module):
     if module.weight is not None:
@@ -526,31 +526,6 @@ class CostRegNet(nn.Module):
         return x
 
 
-# class CostRegNet(nn.Module):
-#     def __init__(self, in_channels, num_candidates):
-#         super(CostRegNet, self).__init__()
-#         self.conv0 = Conv3d(in_channels, 1, padding=1)
-#
-#         self.conv1 = SimpleBottleneck(num_candidates, num_candidates)
-#         self.conv2 = SimpleBottleneck(num_candidates, num_candidates)
-#         self.conv3 = SimpleBottleneck(num_candidates, num_candidates)
-#
-#         self.conv4 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
-#                                             deformable_groups=2)
-#
-#         self.conv5 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
-#                                             deformable_groups=2)
-#         self.conv6 = DeformSimpleBottleneck(num_candidates, num_candidates, modulation=True, mdconv_dilation=2,
-#                                             deformable_groups=2)
-#
-#     def forward(self, x):
-#         conv0 = self.conv0(x)
-#         conv0 = conv0.squeeze(1)
-#         conv3 = self.conv3(self.conv2(self.conv1(conv0)))
-#         x = self.conv6(self.conv5(self.conv4(conv3)))
-#         return x
-
-
 class RefineNet(nn.Module):
     def __init__(self):
         super(RefineNet, self).__init__()
@@ -575,6 +550,281 @@ def depth_regression(p, depth_values):
     return depth
 
 
+def truncated_normal_(tensor, mean=0.0, std=1.0):
+    size = tensor.shape
+    tmp = tensor.new_empty(size + (4,)).normal_()
+    valid = (tmp < 2) & (tmp > -2)
+    ind = valid.max(-1, keepdim=True)[1]
+    tensor.data.copy_(tmp.gather(-1, ind).squeeze(-1))
+    tensor.data.mul_(std).add_(mean)
+
+
+def init_weights(m):
+    if type(m) == nn.Conv2d or type(m) == nn.ConvTranspose2d:
+        nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+        #nn.init.normal_(m.weight, std=0.001)
+        #nn.init.normal_(m.bias, std=0.001)
+        truncated_normal_(m.bias, mean=0, std=0.001)
+
+
+class Encoder(nn.Module):
+    """
+    A convolutional neural network, consisting of len(num_filters) times a block of no_convs_per_block convolutional layers,
+    after each block a pooling operation is performed. And after each convolutional layer a non-linear (ReLU) activation function is applied.
+    """
+
+    def __init__(self, input_channels, num_filters, no_convs_per_block, initializers, padding=True, posterior=False):
+        super(Encoder, self).__init__()
+        self.contracting_path = nn.ModuleList()
+        self.input_channels = input_channels
+        self.num_filters = num_filters
+
+        # if posterior:
+        #     # To accomodate for the mask that is concatenated at the channel axis, we increase the input_channels.
+        #     self.input_channels += 1
+
+        layers = []
+        for i in range(len(self.num_filters)):
+            """
+            Determine input_dim and output_dim of conv layers in this block. The first layer is input x output,
+            All the subsequent layers are output x output.
+            """
+            input_dim = self.input_channels if i == 0 else output_dim
+            output_dim = num_filters[i]
+
+            if i != 0:
+                layers.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0, ceil_mode=True))
+
+            layers.append(nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=int(padding)))
+            layers.append(nn.ReLU(inplace=True))
+
+            for _ in range(no_convs_per_block - 1):
+                layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=int(padding)))
+                layers.append(nn.ReLU(inplace=True))
+
+        self.layers = nn.Sequential(*layers)
+
+        self.layers.apply(init_weights)
+
+    def forward(self, input):
+        # print(input.size(), self.input_channels)
+        output = self.layers(input)
+        return output
+
+
+class Decoder(nn.Module):
+    """
+    A convolutional neural network, consisting of len(num_filters) times a block of no_convs_per_block convolutional layers,
+    after each block a pooling operation is performed. And after each convolutional layer a non-linear (ReLU) activation function is applied.
+    """
+
+    def __init__(self, input_channels, num_filters, no_convs_per_block, laten_dim, padding=True):
+        super(Decoder, self).__init__()
+        self.contracting_path = nn.ModuleList()
+        self.input_channels = input_channels
+        self.num_filters = num_filters
+
+        layers = [nn.Conv2d(laten_dim, input_channels, kernel_size=3, padding=1)]
+        for i in range(len(self.num_filters)-1):
+            """
+            Determine input_dim and output_dim of conv layers in this block. The first layer is input x output,
+            All the subsequent layers are output x output.
+            """
+            input_dim = self.input_channels if i == 0 else output_dim
+            output_dim = num_filters[i]
+
+            layers.append(nn.ConvTranspose2d(input_dim, output_dim, kernel_size=3, stride=2, padding=1, output_padding=1))
+            layers.append(nn.ReLU(inplace=True))
+
+            if i < (len(self.num_filters)-2):
+                for _ in range(no_convs_per_block - 1):
+                    layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=int(padding)))
+                    layers.append(nn.ReLU(inplace=True))
+
+        self.final_layer = nn.Sequential(nn.Conv2d(output_dim, self.num_filters[-1], 3, padding=1),
+                                         nn.Softmax(dim=1))
+
+        self.layers = nn.Sequential(*layers)
+
+        self.layers.apply(init_weights)
+        self.final_layer.apply(init_weights)
+
+    def forward(self, inputs):
+        output = self.layers(inputs)
+        print(output.size())
+        output = self.final_layer(output)
+        return output
+
+
+class AxisAlignedConvGaussian(nn.Module):
+    """
+    A convolutional net that parametrizes a Gaussian distribution with axis aligned covariance matrix.
+    """
+
+    def __init__(self, input_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False):
+        super(AxisAlignedConvGaussian, self).__init__()
+        self.input_channels = input_channels
+        self.channel_axis = 1
+        self.num_filters = num_filters
+        self.no_convs_per_block = no_convs_per_block
+        self.latent_dim = latent_dim
+        self.posterior = posterior
+        if self.posterior:
+            self.name = 'Posterior'
+        else:
+            self.name = 'Prior'
+        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block, initializers,
+                               posterior=self.posterior)
+        self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.latent_dim, kernel_size=3, padding=1)
+        self.show_img = 0
+        self.show_seg = 0
+        self.show_concat = 0
+        self.show_enc = 0
+        self.sum_input = 0
+
+        nn.init.kaiming_normal_(self.conv_layer.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.conv_layer.bias)
+
+    def forward(self, inputs): #, conf=None):
+
+        # If segmentation is not none, concatenate the mask to the channel axis of the input
+        # if conf is not None:
+        #     self.show_img = input
+        #     self.show_seg = conf
+        #     input = torch.cat((input, conf), dim=1)
+        #     self.show_concat = input
+        #     self.sum_input = torch.sum(input)
+
+        encoding = self.encoder(inputs)
+        self.show_enc = encoding
+
+        # We only want the mean of the resulting hxw image
+        # encoding = torch.mean(encoding, dim=2, keepdim=True)
+        # encoding = torch.mean(encoding, dim=3, keepdim=True)
+
+        # Convert encoding to 2 x latent dim and split up for mu and log_sigma
+        mu_log_sigma = self.conv_layer(encoding)
+
+        # We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
+        # mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
+        # mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
+
+        mu = mu_log_sigma[:, :self.latent_dim]
+        log_sigma = mu_log_sigma[:, self.latent_dim:]
+
+        # This is a multivariate normal with diagonal covariance matrix sigma
+        # https://github.com/pytorch/pytorch/pull/11178
+        dist = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)), 1)
+        return dist
+
+
+class GenerationNet(nn.Module):
+    """
+    A probabilistic UNet (https://arxiv.org/abs/1806.05034) implementation.
+    input_channels: the number of channels in the image (1 for greyscale and 3 for RGB)
+    num_classes: the number of classes to predict
+    num_filters: is a list consisint of the amount of filters layer
+    latent_dim: dimension of the latent space
+    no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
+    """
+
+    def __init__(self, input_channels=5, output_channels=8, num_filters=[16, 32, 64, 128], beta=10.0,
+                 latent_dim=32):
+        super(GenerationNet, self).__init__()
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.num_filters = num_filters
+        self.no_convs_per_block = 2
+        self.initializers = {'w': 'he_normal', 'b': 'normal'}
+        self.beta = beta
+        self.latent_dim = latent_dim
+        self.z_prior_sample = 0
+
+        self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block,
+                                             self.latent_dim, self.initializers) #.to(device)
+        self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block,
+                                                 self.latent_dim, self.initializers, posterior=True) #.to(device)
+        num_channels_decoder = num_filters[:-1][::-1] + [self.output_channels]
+        self.generator = Decoder(self.num_filters[-1], num_channels_decoder, 2, self.latent_dim)
+
+        self.posterior_latent_space = None
+        self.prior_latent_space = None
+
+    def forward(self, img, prior_depth, conf, gt_depth=None, gt_conf=None, training=True):
+        """
+        Construct prior latent space for patch and run patch through UNet,
+        in case training is True also construct posterior latent space
+        """
+        if training:
+            self.posterior_latent_space = self.posterior.forward(torch.cat((img, gt_depth, gt_conf), dim=1))
+        self.prior_latent_space = self.prior.forward(torch.cat((img, prior_depth, conf), dim=1))
+        # self.unet_features = self.unet.forward(patch, False)
+
+    def sample(self, testing=False):
+        """
+        Sample a segmentation by reconstructing from a prior sample
+        and combining this with UNet features
+        """
+        if not testing:
+            z_prior = self.prior_latent_space.rsample()
+            self.z_prior_sample = z_prior
+        else:
+            # You can choose whether you mean a sample or the mean here. For the GED it is important to take a sample.
+            # z_prior = self.prior_latent_space.base_dist.loc
+            z_prior = self.prior_latent_space.sample()
+            self.z_prior_sample = z_prior
+        return self.generator.forward(z_prior)
+
+    def reconstruct(self, use_posterior_mean=False, calculate_posterior=True, z_posterior=None):
+        """
+        Reconstruct a segmentation from a posterior sample (decoding a posterior sample) and UNet feature map
+        use_posterior_mean: use posterior_mean instead of sampling z_q
+        calculate_posterior: use a provided sample or sample from posterior latent space
+        """
+        if use_posterior_mean:
+            z_posterior = self.posterior_latent_space.loc
+        else:
+            if calculate_posterior:
+                z_posterior = self.posterior_latent_space.rsample()
+        # print(z_posterior.size())
+        return self.generator.forward(z_posterior)
+
+    def kl_divergence(self, analytic=True, calculate_posterior=False, z_posterior=None):
+        """
+        Calculate the KL divergence between the posterior and prior KL(Q||P)
+        analytic: calculate KL analytically or via sampling from the posterior
+        calculate_posterior: if we use samapling to approximate KL we can sample here or supply a sample
+        """
+        if analytic:
+            # Neeed to add this to torch source code, see: https://github.com/pytorch/pytorch/issues/13545
+            kl_div = kl.kl_divergence(self.posterior_latent_space, self.prior_latent_space)
+        else:
+            if calculate_posterior:
+                z_posterior = self.posterior_latent_space.rsample()
+            log_posterior_prob = self.posterior_latent_space.log_prob(z_posterior)
+            log_prior_prob = self.prior_latent_space.log_prob(z_posterior)
+            kl_div = log_posterior_prob - log_prior_prob
+        return kl_div
+
+    def elbo(self, analytic_kl=True, reconstruct_posterior_mean=False):
+        """
+        Calculate the evidence lower bound of the log-likelihood of P(Y|X)
+        """
+
+        # criterion = nn.BCEWithLogitsLoss(size_average=False, reduce=False, reduction=None)
+        z_posterior = self.posterior_latent_space.rsample()
+
+        kl = torch.mean(self.kl_divergence(analytic=analytic_kl, calculate_posterior=False, z_posterior=z_posterior))
+
+        # Here we use the posterior sample sampled above
+        reconst_vol = self.reconstruct(use_posterior_mean=reconstruct_posterior_mean, calculate_posterior=False,
+                                       z_posterior=z_posterior)
+
+        # reconstruction_loss = criterion(input=self.reconstruction, target=segm)
+        # self.reconstruction_loss = torch.sum(reconstruction_loss)
+        # self.mean_reconstruction_loss = torch.mean(reconstruction_loss)
+
+        return reconst_vol, kl #-(self.reconstruction_loss + self.beta * self.kl)
 
 
 def get_cur_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, shape, max_depth=192.0, min_depth=0.0):
@@ -622,44 +872,46 @@ def get_depth_range_samples(cur_depth, ndepth, depth_inteval_pixel, device, dtyp
 
 if __name__ == "__main__":
     # some testing code, just IGNORE it
-    import sys
-    sys.path.append("../")
-    from datasets import find_dataset_def
-    from torch.utils.data import DataLoader
-    import numpy as np
-    import cv2
-    import matplotlib as mpl
-    mpl.use('Agg')
-    import matplotlib.pyplot as plt
+    # import sys
+    # sys.path.append("../")
+    # from datasets import find_dataset_def
+    # from torch.utils.data import DataLoader
+    # import numpy as np
+    # import cv2
+    # import matplotlib as mpl
+    # mpl.use('Agg')
+    # import matplotlib.pyplot as plt
+    #
+    # # MVSDataset = find_dataset_def("colmap")
+    # # dataset = MVSDataset("../data/results/ford/num10_1/", 3, 'test',
+    # #                      128, interval_scale=1.06, max_h=1250, max_w=1024)
+    #
+    # MVSDataset = find_dataset_def("dtu_yao")
+    # num_depth = 48
+    # dataset = MVSDataset("../data/DTU/mvs_training/dtu/", '../lists/dtu/train.txt', 'train',
+    #                      3, num_depth, interval_scale=1.06 * 192 / num_depth)
+    #
+    # dataloader = DataLoader(dataset, batch_size=1)
+    # item = next(iter(dataloader))
+    #
+    # imgs = item["imgs"][:, :, :, ::4, ::4]  #(B, N, 3, H, W)
+    # # imgs = item["imgs"][:, :, :, :, :]
+    # proj_matrices = item["proj_matrices"]   #(B, N, 2, 4, 4) dim=N: N view; dim=2: index 0 for extr, 1 for intric
+    # proj_matrices[:, :, 1, :2, :] = proj_matrices[:, :, 1, :2, :]
+    # # proj_matrices[:, :, 1, :2, :] = proj_matrices[:, :, 1, :2, :] * 4
+    # depth_values = item["depth_values"]     #(B, D)
+    #
+    # imgs = torch.unbind(imgs, 1)
+    # proj_matrices = torch.unbind(proj_matrices, 1)
+    # ref_img, src_imgs = imgs[0], imgs[1:]
+    # ref_proj, src_proj = proj_matrices[0], proj_matrices[1:][0]  #only vis first view
+    #
+    # src_proj_new = src_proj[:, 0].clone()
+    # src_proj_new[:, :3, :4] = torch.matmul(src_proj[:, 1, :3, :3], src_proj[:, 0, :3, :4])
+    # ref_proj_new = ref_proj[:, 0].clone()
+    # ref_proj_new[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
 
-    # MVSDataset = find_dataset_def("colmap")
-    # dataset = MVSDataset("../data/results/ford/num10_1/", 3, 'test',
-    #                      128, interval_scale=1.06, max_h=1250, max_w=1024)
 
-    MVSDataset = find_dataset_def("dtu_yao")
-    num_depth = 48
-    dataset = MVSDataset("../data/DTU/mvs_training/dtu/", '../lists/dtu/train.txt', 'train',
-                         3, num_depth, interval_scale=1.06 * 192 / num_depth)
-
-    dataloader = DataLoader(dataset, batch_size=1)
-    item = next(iter(dataloader))
-
-    imgs = item["imgs"][:, :, :, ::4, ::4]  #(B, N, 3, H, W)
-    # imgs = item["imgs"][:, :, :, :, :]
-    proj_matrices = item["proj_matrices"]   #(B, N, 2, 4, 4) dim=N: N view; dim=2: index 0 for extr, 1 for intric
-    proj_matrices[:, :, 1, :2, :] = proj_matrices[:, :, 1, :2, :]
-    # proj_matrices[:, :, 1, :2, :] = proj_matrices[:, :, 1, :2, :] * 4
-    depth_values = item["depth_values"]     #(B, D)
-
-    imgs = torch.unbind(imgs, 1)
-    proj_matrices = torch.unbind(proj_matrices, 1)
-    ref_img, src_imgs = imgs[0], imgs[1:]
-    ref_proj, src_proj = proj_matrices[0], proj_matrices[1:][0]  #only vis first view
-
-    src_proj_new = src_proj[:, 0].clone()
-    src_proj_new[:, :3, :4] = torch.matmul(src_proj[:, 1, :3, :3], src_proj[:, 0, :3, :4])
-    ref_proj_new = ref_proj[:, 0].clone()
-    ref_proj_new[:, :3, :4] = torch.matmul(ref_proj[:, 1, :3, :3], ref_proj[:, 0, :3, :4])
 
     # warped_imgs = homo_warping(src_imgs[0], src_proj_new, ref_proj_new, depth_values)
     #
@@ -677,3 +929,15 @@ if __name__ == "__main__":
     #     gamma = 0
     #     img_add = cv2.addWeighted(ref_img_np, alpha, img_np, beta, gamma)
     #     cv2.imwrite('../tmp/tmp{}.png'.format(i), np.hstack([ref_img_np, img_np, img_add])) #* ratio + img_np*(1-ratio)]))
+
+    generator = GenerationNet(5, 8)
+    generator.cuda()
+    img = torch.rand(2, 3, 480, 640).cuda()
+    prior_depth = torch.rand(2, 1, 480, 640).cuda()
+    conf = (prior_depth > 0.5).float().cuda()
+    gt_depth = torch.rand(2, 1, 480, 640).cuda()
+    gt_conf = (gt_depth > 0.5).float().cuda()
+    generator(img, prior_depth, conf, gt_depth, gt_conf)
+    costvol, kl = generator.elbo() #generator.reconstruct()
+
+    print(costvol.size(), kl)
