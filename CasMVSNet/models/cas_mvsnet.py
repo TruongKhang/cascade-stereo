@@ -6,13 +6,14 @@ from models.losses import StereoFocalLoss
 from .utils.warping import homo_warping_3D, resample_vol, homo_warping_2D
 from .utils.disp2prob import LaplaceDisp2Prob
 
+
 Align_Corners_Range = False
 
 
 class DepthNet(nn.Module):
     def __init__(self, ndepths):
         super(DepthNet, self).__init__()
-        vol_filtering_stage1 = nn.Sequential(nn.Conv2d(2*ndepths[0], ndepths[0], kernel_size=1, bias=False),
+        """vol_filtering_stage1 = nn.Sequential(nn.Conv2d(2*ndepths[0], ndepths[0], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[0]),
                                     nn.LeakyReLU(0.1, inplace=True),
                                     nn.Conv2d(ndepths[0], ndepths[0], kernel_size=3, bias=False, padding=1),
@@ -39,8 +40,7 @@ class DepthNet(nn.Module):
                                     nn.Conv2d(ndepths[2], ndepths[2], kernel_size=1, bias=False),
                                     nn.BatchNorm2d(ndepths[2]),
                                     nn.Sigmoid())
-        self.vol_filtering = nn.ModuleList([vol_filtering_stage1, vol_filtering_stage2, vol_filtering_stage3])
-        # self.stereo_focal_loss = StereoFocalLoss(focal_coefficient=1.0)
+        self.vol_filtering = nn.ModuleList([vol_filtering_stage1, vol_filtering_stage2, vol_filtering_stage3])"""
 
     def forward(self, features, proj_matrices, depth_values, num_depth, cost_regularization, prob_volume_init=None,
                 prev_state=None, stage_idx=None):
@@ -263,10 +263,14 @@ class CascadeMVSNet(nn.Module):
                                                            prev_ref_matrix, cur_ref_proj)
 
                 if self.training:
-                    self.cvae(imgs[:, 0], warped_depth, warped_cfd, gt_depth * gt_mask, gt_mask)
+                    self.cvae(imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask)
                     recons_vol, kl_term = self.cvae.elbo()
+                    reg_term = l2_regularisation(self.cvae.prior) + l2_regularisation(self.cvae.posterior) + l2_regularisation(self.cvae.generator)
+                    kl_term += 1e-3 * reg_term
+                    # print("Reconstruction volume: ", recons_vol.dtype, recons_vol.size())
+                    # print("KL term: ", kl_term.dtype, kl_term)
                 else:
-                    self.cvae(imgs[:, 0], warped_depth, warped_cfd, gt_depth * gt_mask, gt_mask, training=False)
+                    self.cvae(imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask, training=False)
                     recons_vol, kl_term = self.cvae.sample(testing=True), 0.0
                 itg_cost_vol = outputs_stage["prob_volume"] + recons_vol
                 itg_cost_vol = F.normalize(itg_cost_vol, p=1, dim=1)

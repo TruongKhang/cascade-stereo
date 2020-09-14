@@ -25,6 +25,18 @@ def init_uniform(module, init_method):
             nn.init.xavier_uniform_(module.weight)
     return
 
+
+def l2_regularisation(m):
+    l2_reg = None
+
+    for W in m.parameters():
+        if l2_reg is None:
+            l2_reg = W.norm(2)
+        else:
+            l2_reg = l2_reg + W.norm(2)
+    return l2_reg
+
+
 class Conv2d(nn.Module):
     """Applies a 2D convolution (optionally with batch normalization and relu activation)
     over an input signal composed of several input planes.
@@ -188,9 +200,9 @@ class Deconv3d(nn.Module):
         # self.init_weights(init_method)
 
     def forward(self, x):
-        y = self.conv(x)
+        x = self.conv(x)
         if self.bn is not None:
-            x = self.bn(y)
+            x = self.bn(x)
         if self.relu:
             x = F.relu(x, inplace=True)
         return x
