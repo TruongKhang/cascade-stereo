@@ -76,7 +76,7 @@ class Disp2Prob(object):
 
         # let the outliers' probability to be 0
         # in case divide or log 0, we plus a tiny constant value
-        probability = probability * mask + self.eps
+        # probability = probability + (1 - mask) / self.index.size(1) #+ self.eps
 
         # in case probability is NaN
         if isNaN(probability.min()) or isNaN(probability.max()):
@@ -114,8 +114,8 @@ class LaplaceDisp2Prob(Disp2Prob):
 
 class GaussianDisp2Prob(Disp2Prob):
     # variance is the variance of the Gaussian distribution
-    def __init__(self, depth_vol, gtDisp, variance=1, start_disp=0, dilation=1):
-        super(GaussianDisp2Prob, self).__init__(depth_vol, gtDisp, start_disp, dilation)
+    def __init__(self, maxDisp, gtDisp, variance=1, start_disp=0, dilation=1):
+        super(GaussianDisp2Prob, self).__init__(maxDisp, gtDisp, start_disp, dilation)
         self.variance = variance
 
     def calProb(self):
@@ -136,6 +136,11 @@ class OneHotDisp2Prob(Disp2Prob):
     def getProb(self):
 
         # |d - d{gt}| < variance, [BatchSize, maxDisp, Height, Width]
-        probability = torch.lt(torch.abs(self.index - self.gtDisp), self.variance).type_as(self.gtDisp)
+        start_disp, end_disp = self.index[:, [0], :, :], self.index[:, [-1], :, :]
+        mask = (self.gtDisp - start_disp > 0) & (self.gtDisp - end_disp < 0)
+        mask = mask.detach().type_as(self.gtDisp)
+        depth_interval = self.index[:, 1, :, :] - self.index[:, 0, :, :]
+        probability = torch.lt(torch.abs(self.index - self.gtDisp), self.variance).type_as(self.gtDisp) + (1 - mask) / self.index.size(1)
+        probability = F.normalize(probability, p=1, dim=1)
 
         return probability

@@ -7,6 +7,7 @@ import time
 import sys
 sys.path.append("..")
 # from utils import local_pcd
+from models.utils.disp2prob import LaplaceDisp2Prob
 
 
 def init_bn(module):
@@ -185,7 +186,7 @@ class Deconv3d(nn.Module):
        """
 
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
-                 relu=True, bn=True, bn_momentum=0.1, init_method="xavier", **kwargs):
+                 relu=True, bn=False, bn_momentum=0.1, init_method="xavier", **kwargs):
         super(Deconv3d, self).__init__()
         self.out_channels = out_channels
         assert stride in [1, 2]
@@ -505,8 +506,9 @@ class FeatureNet(nn.Module):
 
 
 class CostRegNet(nn.Module):
-    def __init__(self, in_channels, base_channels):
+    def __init__(self, in_channels, base_channels, last_layer=True):
         super(CostRegNet, self).__init__()
+        self.last_layer = last_layer
         self.conv0 = Conv3d(in_channels, base_channels, padding=1)
 
         self.conv1 = Conv3d(base_channels, base_channels * 2, stride=2, padding=1)
@@ -524,7 +526,8 @@ class CostRegNet(nn.Module):
 
         self.conv11 = Deconv3d(base_channels * 2, base_channels * 1, stride=2, padding=1, output_padding=1)
 
-        self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
+        if self.last_layer:
+            self.prob = nn.Conv3d(base_channels, 1, 3, stride=1, padding=1, bias=False)
 
     def forward(self, x):
         conv0 = self.conv0(x)
@@ -534,7 +537,8 @@ class CostRegNet(nn.Module):
         x = conv4 + self.conv7(x)
         x = conv2 + self.conv9(x)
         x = conv0 + self.conv11(x)
-        x = self.prob(x)
+        if self.last_layer:
+            x = self.prob(x)
         return x
 
 
@@ -585,23 +589,25 @@ class Encoder(nn.Module):
     after each block a pooling operation is performed. And after each convolutional layer a non-linear (ReLU) activation function is applied.
     """
 
-    def __init__(self, input_channels, num_filters, no_convs_per_block, initializers, padding=True, posterior=False):
+    def __init__(self, input_channels, num_filters, no_convs_per_block, padding=True):
         super(Encoder, self).__init__()
         self.contracting_path = nn.ModuleList()
         self.input_channels = input_channels
         self.num_filters = num_filters
 
-        # if posterior:
-        #     # To accomodate for the mask that is concatenated at the channel axis, we increase the input_channels.
-        #     self.input_channels += 1
+        self.dc_feature = nn.Sequential(nn.Conv2d(self.input_channels[0], 16, kernel_size=3, padding=1),
+                                        nn.ReLU())
+        self.img_feature = nn.Sequential(nn.Conv2d(self.input_channels[1], 16, kernel_size=3, padding=1),
+                                         nn.ReLU())
 
         layers = []
-        for i in range(len(self.num_filters)):
+        output_dim = 32
+        for i in range(len(self.num_filters[:-1])):
             """
             Determine input_dim and output_dim of conv layers in this block. The first layer is input x output,
             All the subsequent layers are output x output.
             """
-            input_dim = self.input_channels if i == 0 else output_dim
+            input_dim = 32 if i == 0 else output_dim
             output_dim = num_filters[i]
 
             if i != 0:
@@ -613,15 +619,36 @@ class Encoder(nn.Module):
             for _ in range(no_convs_per_block - 1):
                 layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=int(padding)))
                 layers.append(nn.ReLU(inplace=True))
+        self.last_downsample = nn.MaxPool2d(kernel_size=2, stride=2, padding=0, ceil_mode=True)
+
+        self.latent_mu = nn.Sequential(nn.Conv2d(output_dim, self.num_filters[-1]//2, kernel_size=3, padding=1),
+                                       nn.ReLU(inplace=True),
+                                       nn.Conv2d(self.num_filters[-1]//2, self.num_filters[-1]//2, kernel_size=3, padding=1),
+                                       nn.ReLU(inplace=True))
+        self.latent_sigma = nn.Sequential(nn.Conv2d(output_dim, self.num_filters[-1] // 2, kernel_size=3, padding=1),
+                                          nn.ReLU(inplace=True),
+                                          nn.Conv2d(self.num_filters[-1] // 2, self.num_filters[-1] // 2, kernel_size=3,
+                                                    padding=1),
+                                          nn.ReLU(inplace=True))
 
         self.layers = nn.Sequential(*layers)
 
         self.layers.apply(init_weights)
+        self.dc_feature.apply(init_weights)
+        self.img_feature.apply(init_weights)
+        self.latent_mu.apply(init_weights)
+        self.latent_sigma.apply(init_weights)
 
-    def forward(self, input):
+    def forward(self, inputs):
         # print(input.size(), self.input_channels)
-        output = self.layers(input)
-        return output
+        dc, img_feat = inputs
+        dc = self.dc_feature(dc)
+        img_feat = self.img_feature(img_feat)
+        output = self.layers(torch.cat((dc, img_feat), dim=1))
+        output = self.last_downsample(output)
+        mu = self.latent_mu(output)
+        sigma = self.latent_sigma(output)
+        return mu, sigma
 
 
 class Decoder(nn.Module):
@@ -653,18 +680,22 @@ class Decoder(nn.Module):
                     layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=int(padding)))
                     layers.append(nn.ReLU(inplace=True))
 
-        self.final_layer = nn.Sequential(nn.Conv2d(output_dim, self.num_filters[-1], 3, padding=1),
+        self.final_layer = nn.Sequential(nn.Conv2d(output_dim, self.num_filters[-1], kernel_size=3, padding=1),
                                          nn.Softmax(dim=1))
+        # self.variance = nn.Conv2d(output_dim, self.num_filters[-1], 1)
 
         self.layers = nn.Sequential(*layers)
 
         self.layers.apply(init_weights)
         self.final_layer.apply(init_weights)
+        # self.variance.apply(init_weights)
 
-    def forward(self, inputs):
+    def forward(self, inputs, depth_values=None, variance=None):
         output = self.layers(inputs)
-        output = self.final_layer(output)
-        return output
+        #depth = self.final_layer(output)
+        #var = self.variance(output) * variance
+        prob_volume = self.final_layer(output) #LaplaceDisp2Prob(depth_values, depth, variance).getProb()
+        return prob_volume.unsqueeze(1) # output
 
 
 class AxisAlignedConvGaussian(nn.Module):
@@ -672,7 +703,7 @@ class AxisAlignedConvGaussian(nn.Module):
     A convolutional net that parametrizes a Gaussian distribution with axis aligned covariance matrix.
     """
 
-    def __init__(self, input_channels, num_filters, no_convs_per_block, latent_dim, initializers, posterior=False):
+    def __init__(self, input_channels, num_filters, no_convs_per_block, latent_dim, posterior=False):
         super(AxisAlignedConvGaussian, self).__init__()
         self.input_channels = input_channels
         self.channel_axis = 1
@@ -684,48 +715,39 @@ class AxisAlignedConvGaussian(nn.Module):
             self.name = 'Posterior'
         else:
             self.name = 'Prior'
-        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block, initializers,
-                               posterior=self.posterior)
-        self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.latent_dim, kernel_size=3, padding=1)
-        self.show_img = 0
-        self.show_seg = 0
-        self.show_concat = 0
-        self.show_enc = 0
-        self.sum_input = 0
+        self.encoder = Encoder(self.input_channels, self.num_filters, self.no_convs_per_block)
+        # self.conv_layer = nn.Conv2d(num_filters[-1], 2 * self.latent_dim, kernel_size=3, padding=1)
+        self.fc_mu = nn.Conv2d(num_filters[-1]//2, self.latent_dim, kernel_size=1)
+        self.fc_sigma = nn.Sequential(nn.Conv2d(num_filters[-1]//2, self.latent_dim, kernel_size=1),
+                                      nn.Softplus(beta=0.01))
 
-        nn.init.kaiming_normal_(self.conv_layer.weight, mode='fan_in', nonlinearity='relu')
-        nn.init.normal_(self.conv_layer.bias)
+        nn.init.kaiming_normal_(self.fc_mu.weight, mode='fan_in', nonlinearity='relu')
+        nn.init.normal_(self.fc_mu.bias)
+        nn.init.kaiming_normal_(self.fc_sigma.weight)
+        nn.init.normal_(self.fc_sigma.bias)
 
     def forward(self, inputs): #, conf=None):
 
-        # If segmentation is not none, concatenate the mask to the channel axis of the input
-        # if conf is not None:
-        #     self.show_img = input
-        #     self.show_seg = conf
-        #     input = torch.cat((input, conf), dim=1)
-        #     self.show_concat = input
-        #     self.sum_input = torch.sum(input)
-
-        encoding = self.encoder(inputs)
-        self.show_enc = encoding
+        latent_mu, latent_sigma = self.encoder(inputs)
 
         # We only want the mean of the resulting hxw image
-        # encoding = torch.mean(encoding, dim=2, keepdim=True)
-        # encoding = torch.mean(encoding, dim=3, keepdim=True)
+        latent_mu = torch.mean(latent_mu, dim=2, keepdim=True)
+        latent_mu = torch.mean(latent_mu, dim=3, keepdim=True)
+        latent_sigma = torch.mean(latent_sigma, dim=2, keepdim=True)
+        latent_sigma = torch.mean(latent_sigma, dim=3, keepdim=True)
 
         # Convert encoding to 2 x latent dim and split up for mu and log_sigma
-        mu_log_sigma = self.conv_layer(encoding)
+        mu = self.fc_mu(latent_mu)
+        sigma = self.fc_sigma(latent_sigma)
 
-        # We squeeze the second dimension twice, since otherwise it won't work when batch size is equal to 1
-        # mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
-        # mu_log_sigma = torch.squeeze(mu_log_sigma, dim=2)
-
-        mu = mu_log_sigma[:, :self.latent_dim]
-        log_sigma = mu_log_sigma[:, self.latent_dim:]
+        mu = mu.squeeze(3).squeeze(2)
+        sigma = sigma.squeeze(3).squeeze(2)
+        # mu = mu.permute(0, 2, 3, 1)
+        # log_sigma = log_sigma.permute(0, 2, 3, 1)
 
         # This is a multivariate normal with diagonal covariance matrix sigma
         # https://github.com/pytorch/pytorch/pull/11178
-        dist = Independent(Normal(loc=mu, scale=torch.exp(log_sigma)), 1)
+        dist = Independent(Normal(loc=mu, scale=sigma), 1)
         return dist
 
 
@@ -739,8 +761,8 @@ class GenerationNet(nn.Module):
     no_cons_per_block: no convs per block in the (convolutional) encoder of prior and posterior
     """
 
-    def __init__(self, input_channels=5, output_channels=8, num_filters=[16, 32, 64, 128], beta=10.0,
-                 latent_dim=32):
+    def __init__(self, input_channels=5, output_channels=8, num_filters=[16, 32, 64, 96, 128], beta=10.0,
+                 latent_dim=64):
         super(GenerationNet, self).__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
@@ -752,9 +774,9 @@ class GenerationNet(nn.Module):
         self.z_prior_sample = 0
 
         self.prior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block,
-                                             self.latent_dim, self.initializers) #.to(device)
+                                             self.latent_dim) #.to(device)
         self.posterior = AxisAlignedConvGaussian(self.input_channels, self.num_filters, self.no_convs_per_block,
-                                                 self.latent_dim, self.initializers, posterior=True) #.to(device)
+                                                 self.latent_dim, posterior=True) #.to(device)
         num_channels_decoder = num_filters[:-1][::-1] + [self.output_channels]
         self.generator = Decoder(self.num_filters[-1], num_channels_decoder, 2, self.latent_dim)
 
@@ -767,11 +789,11 @@ class GenerationNet(nn.Module):
         in case training is True also construct posterior latent space
         """
         if training:
-            self.posterior_latent_space = self.posterior.forward(torch.cat((img_feature, gt_costvol), dim=1)) #, gt_depth, gt_conf), dim=1))
-        self.prior_latent_space = self.prior.forward(torch.cat((img_feature, costvol), dim=1)) #prior_depth, conf), dim=1))
+            self.posterior_latent_space = self.posterior.forward(torch.cat((img_feature, gt_costvol), dim=1)) #torch.cat((img, gt_depth, gt_conf), dim=1))
+        self.prior_latent_space = self.prior.forward(torch.cat((img_feature, costvol), dim=1)) #torch.cat((img, prior_depth, conf), dim=1))
         # self.unet_features = self.unet.forward(patch, False)
 
-    def sample(self, testing=False):
+    def sample(self, testing=False, depth_values=None, variance=None, num_samples=1):
         """
         Sample a segmentation by reconstructing from a prior sample
         and combining this with UNet features
@@ -779,14 +801,19 @@ class GenerationNet(nn.Module):
         if not testing:
             z_prior = self.prior_latent_space.rsample()
             self.z_prior_sample = z_prior
+            cost_volume = self.generator.forward(z_prior.permute(0, 3, 1, 2), depth_values, variance)
         else:
             # You can choose whether you mean a sample or the mean here. For the GED it is important to take a sample.
             # z_prior = self.prior_latent_space.base_dist.loc
-            z_prior = self.prior_latent_space.sample()
-            self.z_prior_sample = z_prior
-        return self.generator.forward(z_prior)
+            cost_volume = []
+            for _ in range(num_samples):
+                z_prior = self.prior_latent_space.sample()
+                # self.z_prior_sample = z_prior
+                cost_volume.append(self.generator.forward(z_prior.permute(0, 3, 1, 2), depth_values, variance))
+            cost_volume = torch.cat(cost_volume, dim=1)
+        return cost_volume #self.generator.forward(z_prior.permute(0, 3, 1, 2), depth_values, variance)
 
-    def reconstruct(self, use_posterior_mean=False, calculate_posterior=True, z_posterior=None):
+    def reconstruct(self, use_posterior_mean=False, calculate_posterior=True, z_posterior=None, depth_values=None, variance=None):
         """
         Reconstruct a segmentation from a posterior sample (decoding a posterior sample) and UNet feature map
         use_posterior_mean: use posterior_mean instead of sampling z_q
@@ -798,7 +825,7 @@ class GenerationNet(nn.Module):
             if calculate_posterior:
                 z_posterior = self.posterior_latent_space.rsample()
         # print(z_posterior.size())
-        return self.generator.forward(z_posterior)
+        return self.generator.forward(z_posterior.permute(0, 3, 1, 2), depth_values, variance)
 
     def kl_divergence(self, analytic=True, calculate_posterior=False, z_posterior=None):
         """
@@ -817,7 +844,7 @@ class GenerationNet(nn.Module):
             kl_div = log_posterior_prob - log_prior_prob
         return kl_div
 
-    def elbo(self, analytic_kl=True, reconstruct_posterior_mean=False):
+    def elbo(self, analytic_kl=True, reconstruct_posterior_mean=False, depth_values=None, variance=None):
         """
         Calculate the evidence lower bound of the log-likelihood of P(Y|X)
         """
@@ -825,11 +852,12 @@ class GenerationNet(nn.Module):
         # criterion = nn.BCEWithLogitsLoss(size_average=False, reduce=False, reduction=None)
         z_posterior = self.posterior_latent_space.rsample()
 
-        kl = torch.mean(self.kl_divergence(analytic=analytic_kl, calculate_posterior=False, z_posterior=z_posterior))
+        kl = self.kl_divergence(analytic=analytic_kl, calculate_posterior=False, z_posterior=z_posterior)
+        #kl = torch.mean(self.kl_divergence(analytic=analytic_kl, calculate_posterior=False, z_posterior=z_posterior))
 
         # Here we use the posterior sample sampled above
         reconst_vol = self.reconstruct(use_posterior_mean=reconstruct_posterior_mean, calculate_posterior=False,
-                                       z_posterior=z_posterior)
+                                       z_posterior=z_posterior, depth_values=depth_values, variance=variance)
 
         # reconstruction_loss = criterion(input=self.reconstruction, target=segm)
         # self.reconstruction_loss = torch.sum(reconstruction_loss)

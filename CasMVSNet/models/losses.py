@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .module import depth_regression
 
 class StereoFocalLoss(object):
     """
@@ -139,13 +140,35 @@ def cas_mvsnet_loss(inputs, depth_gt_ms, mask_ms, **kwargs):
 
         depth_loss = F.smooth_l1_loss(depth_est[mask], depth_gt[mask], reduction='mean')
 
+        """prob_volume_sum2 = 2 * F.avg_pool3d(F.pad(stage_inputs["prob_volume"].unsqueeze(1), pad=(0, 0, 0, 0, 0, 1)), (2, 1, 1), stride=1, padding=0).squeeze(1)
+        depth_range_stage = inputs["depth_candidates"][stage_key]
+        #depth_min = depth_range_stage[:, 0]
+        #depth_interval = depth_range_stage[:, 1] - depth_min
+        num_depth = depth_range_stage.size(1)
+        depth_index = depth_regression(stage_inputs["prob_volume"].detach(), depth_values=torch.arange(num_depth, device=stage_inputs["prob_volume"].device, dtype=torch.float)).long()
+        #depth_index = (depth_gt - depth_min) / depth_interval
+        #depth_index = depth_index.long()
+        depth_index = depth_index.clamp(min=0, max=num_depth-1)"""
+        # gt_conf = stage_inputs["photometric_confidence"] #torch.gather(prob_volume_sum2, 1, depth_index.unsqueeze(1)).squeeze(1)
+        # conf_loss = -torch.log(gt_conf[mask]).mean()
+        # print(stage_key, depth_loss, conf_loss)
+
         if depth_loss_weights is not None:
             stage_idx = int(stage_key.replace("stage", "")) - 1
-            total_loss += depth_loss_weights[stage_idx] * depth_loss
+            total_loss = total_loss + depth_loss_weights[stage_idx] * depth_loss #+ conf_loss)
+            if "kl" in stage_inputs:
+                kl = torch.mean(stage_inputs["kl"])
+                total_loss += depth_loss_weights[stage_idx] * kl
         else:
-            total_loss += 1.0 * depth_loss
-        if stage_key == 'stage3':
-            total_loss += depth_loss_weights[2] * stage_inputs["kl"]
+            total_loss += 1.0 * depth_loss #+ conf_loss)
+            if "kl" in stage_inputs:
+                kl = torch.mean(stage_inputs["kl"])
+                total_loss += kl
+        # if stage_key == 'stage3':
+        #if "kl" in stage_inputs:
+        #    kl = torch.mean(stage_inputs["kl"])
+        #    stage_idx = 
+        #    total_loss += depth_loss_weights[2] * kl
         # depth_values_stage = depth_values[stage_key]
         # est_prob_vol = stage_inputs["prob_volume"]
         # total_loss += stage_infos[stage_key]["loss_vol_weight"] * stereo_focal_loss.loss_per_level(est_prob_vol, depth_gt.unsqueeze(1), stage_infos[stage_key]["variance"], depth_values_stage)

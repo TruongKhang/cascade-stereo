@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from .module import *
 from models.losses import StereoFocalLoss
 from .utils.warping import homo_warping_3D, resample_vol, homo_warping_2D
-from .utils.disp2prob import LaplaceDisp2Prob, OneHotDisp2Prob, GaussianDisp2Prob
+from .utils.disp2prob import LaplaceDisp2Prob, OneHotDisp2Prob
 
 
 Align_Corners_Range = False
@@ -82,13 +82,14 @@ class DepthNet(nn.Module):
         # step 3. cost volume regularization
         cost_reg = cost_regularization(volume_variance)
         # cost_reg = F.upsample(cost_reg, [num_depth * 4, img_height, img_width], mode='trilinear')
-        prob_volume_pre = cost_reg.squeeze(1)
+        if stage_idx > 0:
+            prob_volume_pre = cost_reg.squeeze(1)
 
-        if prob_volume_init is not None:
-            prob_volume_pre += prob_volume_init
+        #if prob_volume_init is not None:
+        #    prob_volume_pre += prob_volume_init
 
         # log_prob_volume = F.log_softmax(prob_volume_pre, dim=1)
-        prob_volume = F.softmax(prob_volume_pre, dim=1)
+            prob_volume = F.softmax(prob_volume_pre, dim=1)
 
         # edit by Khang
         # ref_proj_cur = ref_proj[:, 0].clone()
@@ -120,26 +121,20 @@ class DepthNet(nn.Module):
         # itg_prob_volume = prob_volume + warped_costvol * mask
         # itg_prob_volume = F.normalize(itg_prob_volume, p=1, dim=1)
 
-        itg_prob_volume = prob_volume
+            itg_prob_volume = prob_volume
 
-        depth = depth_regression(itg_prob_volume, depth_values=depth_values)
+            depth = depth_regression(itg_prob_volume, depth_values=depth_values)
 
-        with torch.no_grad():
+            with torch.no_grad():
             # photometric confidence
-            prob_volume_sum4 = 4 * F.avg_pool3d(F.pad(itg_prob_volume.unsqueeze(1), pad=(0, 0, 0, 0, 1, 2)), (4, 1, 1), stride=1, padding=0).squeeze(1)
-            depth_index = depth_regression(itg_prob_volume, depth_values=torch.arange(num_depth, device=itg_prob_volume.device, dtype=torch.float)).long()
-            depth_index = depth_index.clamp(min=0, max=num_depth-1)
-            photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
+                prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(itg_prob_volume.unsqueeze(1), pad=(0, 0, 0, 0, 0, 1)), (2, 1, 1), stride=1, padding=0).squeeze(1)
+                depth_index = depth_regression(itg_prob_volume, depth_values=torch.arange(num_depth, device=itg_prob_volume.device, dtype=torch.float)).long()
+                depth_index = depth_index.clamp(min=0, max=num_depth-1)
+                photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
 
-        # prev_depth = depth_regression(prev_costvol, depth_values=depth_values)
-        # prev_prob_volume_sum4 = 4 * F.avg_pool3d(F.pad(prev_costvol.unsqueeze(1), pad=(0, 0, 0, 0, 1, 2)), (4, 1, 1),
-        #                                          stride=1, padding=0).squeeze(1)
-        # depth_index = depth_regression(prev_costvol, depth_values=torch.arange(num_depth, device=prev_costvol.device,
-        #                                                                       dtype=torch.float)).long()
-        # depth_index = depth_index.clamp(min=0, max=num_depth - 1)
-        # prev_confidence = torch.gather(prev_prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
-        # final_depth = depth * photometric_confidence + prev_depth * prev_confidence
-        # final_confidence = (photometric_confidence + prev_confidence) / 2
+        else:
+            itg_prob_volume = cost_reg
+            depth, photometric_confidence = None, None
         return {"depth": depth, "photometric_confidence": photometric_confidence, "prob_volume": itg_prob_volume}
 
         # return {"depth": depth,  "photometric_confidence": photometric_confidence}
@@ -165,18 +160,12 @@ class CascadeMVSNet(nn.Module):
         self.stage_infos = {
             "stage1":{
                 "scale": 4.0,
-                "variance": 4.0,
-                "loss_weight": 10,
             },
             "stage2": {
                 "scale": 2.0,
-                "variance": 2.0,
-                "loss_weight": 10,
             },
             "stage3": {
                 "scale": 1.0,
-                "variance": 1.0,
-                "loss_weight": 20,
             }
         }
 
@@ -184,15 +173,20 @@ class CascadeMVSNet(nn.Module):
         if self.share_cr:
             self.cost_regularization = CostRegNet(in_channels=self.feature.out_channels, base_channels=8)
         else:
+            last_layer = [False, True, True]
             self.cost_regularization = nn.ModuleList([CostRegNet(in_channels=self.feature.out_channels[i],
-                                                                 base_channels=self.cr_base_chs[i])
+                                                                 base_channels=self.cr_base_chs[i], last_layer=last_layer[i])
                                                       for i in range(self.num_stage)])
         if self.refine:
             self.refine_network = RefineNet()
 
         self.DepthNet = DepthNet(self.ndepths)
-        in_channels = self.ndepths[-1] + self.cr_base_chs[-1]
-        self.cvae = GenerationNet(input_channels=in_channels, output_channels=self.cr_base_chs[-1])
+        in_channels = self.ndepths[0] + self.feature.out_channels[0]
+        self.cvae = GenerationNet(input_channels=in_channels, output_channels=self.ndepths[0], num_filters=[48, 64, 64, 96, 128])
+        self.f_comb = nn.Sequential(Conv3d(self.cr_base_chs[0]*2, self.cr_base_chs[0], kernel_size=1),
+                                    Conv3d(self.cr_base_chs[0], self.cr_base_chs[0], kernel_size=3, padding=1))
+        #self.f_comb = Conv3d(self.cr_base_chs[0]*2, self.cr_base_chs[0], kernel_size=1)
+        self.regress_prob = nn.Conv3d(self.cr_base_chs[0], 1, 3, padding=1, bias=False)
 
     def forward(self, imgs, proj_matrices, depth_values, prev_state=None, gt_depth=None, gt_mask=None):
 
@@ -221,7 +215,8 @@ class CascadeMVSNet(nn.Module):
             prev_costvol_stage = prev_costvol["stage{}".format(stage_idx + 1)]
             prev_ref_matrix = prev_ref_matrices["stage{}".format(stage_idx + 1)]
             prev_depth_values_stage = prev_depth_values["stage{}".format(stage_idx + 1)]
-            # gt_depth_stage = gt_depth["stage{}".format(stage_idx + 1)].unsqueeze(1)
+            gt_depth_stage = gt_depth["stage{}".format(stage_idx + 1)].unsqueeze(1) if gt_depth is not None else None
+            gt_mask_stage = gt_mask["stage{}".format(stage_idx + 1)].unsqueeze(1) if gt_mask is not None else None
 
             if depth is not None:
                 if self.grad_method == "detach":
@@ -254,7 +249,7 @@ class CascadeMVSNet(nn.Module):
                                           prev_state=(prev_ref_matrix, prev_costvol_stage, prev_depth_values_stage, is_begin),
                                           stage_idx=stage_idx)
 
-            if stage_idx == (self.num_stage-1):
+            if stage_idx == 0: #(self.num_stage-1):
                 proj_matrices_stage = torch.unbind(proj_matrices_stage, 1)
                 ref_proj = proj_matrices_stage[0]
                 cur_ref_proj = ref_proj[:, 0].clone()
@@ -262,35 +257,52 @@ class CascadeMVSNet(nn.Module):
                 prev_depth, prev_cfd = prev_costvol_stage
                 warped_depth, warped_cfd = homo_warping_2D(prev_depth.unsqueeze(1), prev_cfd.unsqueeze(1),
                                                            prev_ref_matrix, cur_ref_proj)
-                std = (1 - warped_cfd) * 2 + 1.0
-                warped_costvol = LaplaceDisp2Prob(depth_values_stage, warped_depth, variance=std).getProb()
-                gt_costvol = OneHotDisp2Prob(depth_values_stage, gt_depth).getProb()
+                var = (1 - warped_cfd)*100 + self.depth_interals_ratio[stage_idx]*depth_interval
+                #print(warped_cfd.min().item(), warped_cfd.max().item())
+                #print(var.min().item(), var.max().item())
+                warped_costvol = LaplaceDisp2Prob(depth_values_stage, warped_depth, variance=var).getProb()
+                if is_begin.sum() > 0:
+                    #var = outputs["stage{}".format(stage_idx)]["photometric_confidence"].detach()[is_begin]
+                    #var = F.interpolate(var.unsqueeze(1), [img.shape[2], img.shape[3]], mode='bilinear', align_corners=Align_Corners_Range)
+                    #var = (1 - var)*10 + self.depth_interals_ratio[stage_idx]*depth_interval
+                    warped_costvol[is_begin] = F.softmax(self.regress_prob(outputs_stage["prob_volume"].detach()[is_begin]).detach().squeeze(1), dim=1) #LaplaceDisp2Prob(depth_values_stage[is_begin], cur_depth[is_begin], variance=var).getProb() 
+                # gt_costvol = OneHotDisp2Prob(depth_values_stage, gt_depth_stage, variance=self.depth_interals_ratio[stage_idx]*depth_interval).getProb()
+                # gt_costvol = gt_costvol + (1 - gt_mask) / self.ndepths[stage_idx]
+                # sum_warped = warped_costvol.sum(dim=1)
+                # sum_gt = gt_costvol.sum(dim=1)
+                # print(sum_warped.min(), sum_warped.max())
+                # print(sum_gt.min(), sum_gt.max())
+                # h, w = imgs[:, 0].size(2), imgs[:, 0].size(3)
+                # feature_img = F.interpolate(imgs[:, 0], [h//int(stage_scale), w//int(stage_scale)], mode='bilinear', align_corners=Align_Corners_Range) 
                 feature_img = features_stage[0].detach()
+                #warped_depth[is_begin] = outputs_stage["depth"].detach().unsqueeze(1)[is_begin]
+                #warped_cfd[is_begin] = outputs_stage["photometric_confidence"].detach().unsqueeze(1)[is_begin]
+
                 if self.training:
-                    self.cvae(feature_img, warped_costvol, gt_costvol) # imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask)
-                    recons_vol, kl_term = self.cvae.elbo()
-                    reg_term = l2_regularisation(self.cvae.prior) + l2_regularisation(self.cvae.posterior) + l2_regularisation(self.cvae.generator)
-                    kl_term += 1e-3 * reg_term
-                    # print("Reconstruction volume: ", recons_vol.dtype, recons_vol.size())
-                    # print("KL term: ", kl_term.dtype, kl_term)
+                    gt_costvol = OneHotDisp2Prob(depth_values_stage, gt_depth_stage, variance=self.depth_interals_ratio[stage_idx]*depth_interval).getProb()
+                    self.cvae(feature_img, warped_costvol, gt_costvol) #warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask)
+                    recons_vol, kl_term = self.cvae.elbo() #depth_values=depth_values_stage/1000, variance=1000)
+                    recons_vol = recons_vol.repeat(1, self.cr_base_chs[stage_idx], 1, 1, 1)
+                    # reg_term = l2_regularisation(self.cvae.prior) + l2_regularisation(self.cvae.posterior) + l2_regularisation(self.cvae.generator)
+                    outputs_stage['kl'] = kl_term
                 else:
                     self.cvae(feature_img, warped_costvol, training=False) #imgs[:, 0], warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask, training=False)
-                    recons_vol, kl_term = self.cvae.sample(testing=True), 0.0
-                itg_cost_vol = outputs_stage["prob_volume"] + recons_vol
-                itg_cost_vol = F.normalize(itg_cost_vol, p=1, dim=1)
+                    recons_vol = self.cvae.sample(testing=True, num_samples=self.cr_base_chs[stage_idx]) #, depth_values=depth_values_stage/1000, variance=1000)
+                itg_cost_vol = self.f_comb(torch.cat((outputs_stage["prob_volume"], recons_vol), dim=1)) #.squeeze(1) #outputs_stage["prob_volume"] + recons_vol
+                itg_cost_vol = F.softmax(self.regress_prob(itg_cost_vol).squeeze(1), dim=1) #F.normalize(itg_cost_vol, p=1, dim=1)
                 outputs_stage['depth'] = depth_regression(itg_cost_vol, depth_values=depth_values_stage)
                 with torch.no_grad():
                     # photometric confidence
-                    prob_volume_sum4 = 4 * F.avg_pool3d(F.pad(itg_cost_vol.unsqueeze(1), pad=(0, 0, 0, 0, 1, 2)),
-                                                        (4, 1, 1), stride=1, padding=0).squeeze(1)
-                    depth_index = depth_regression(itg_cost_vol,
+                    prob_volume_sum4 = 2 * F.avg_pool3d(F.pad(itg_cost_vol.unsqueeze(1), pad=(0, 0, 0, 0, 0, 1)),
+                                                        (2, 1, 1), stride=1, padding=0).squeeze(1)
+                    depth_index = depth_regression(itg_cost_vol.detach(),
                                                    depth_values=torch.arange(self.ndepths[stage_idx], device=itg_cost_vol.device,
                                                                              dtype=torch.float)).long()
                     depth_index = depth_index.clamp(min=0, max=self.ndepths[stage_idx]-1)
                     photometric_confidence = torch.gather(prob_volume_sum4, 1, depth_index.unsqueeze(1)).squeeze(1)
-                    outputs_stage['photometric_confidence'] = photometric_confidence
-                    outputs_stage['prob_volume'] = itg_cost_vol
-                outputs_stage['kl'] = kl_term
+                outputs_stage['photometric_confidence'] = photometric_confidence
+                outputs_stage['prob_volume'] = itg_cost_vol
+                # outputs_stage['kl'] = kl_term
 
             depth = outputs_stage['depth']
             outputs["stage{}".format(stage_idx + 1)] = outputs_stage
