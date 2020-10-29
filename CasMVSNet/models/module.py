@@ -680,9 +680,11 @@ class Decoder(nn.Module):
                     layers.append(nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=int(padding)))
                     layers.append(nn.ReLU(inplace=True))
 
-        self.final_layer = nn.Sequential(nn.Conv2d(output_dim, self.num_filters[-1], kernel_size=3, padding=1),
-                                         nn.Softmax(dim=1))
+        self.final_layer = nn.Conv2d(output_dim, 1, kernel_size=1) #nn.Sequential(nn.Conv2d(output_dim, self.num_filters[-1], kernel_size=3, padding=1),
+                           #              nn.Softmax(dim=1))
         # self.variance = nn.Conv2d(output_dim, self.num_filters[-1], 1)
+        self.to_volume = nn.Sequential(nn.Conv2d(self.num_filters[-1], self.num_filters[-1], kernel_size=1),
+                                       nn.Softmax())
 
         self.layers = nn.Sequential(*layers)
 
@@ -692,9 +694,10 @@ class Decoder(nn.Module):
 
     def forward(self, inputs, depth_values=None, variance=None):
         output = self.layers(inputs)
-        #depth = self.final_layer(output)
+        depth = self.final_layer(output)
+        prob_volume = self.to_volume(torch.abs(depth - depth_values))
         #var = self.variance(output) * variance
-        prob_volume = self.final_layer(output) #LaplaceDisp2Prob(depth_values, depth, variance).getProb()
+        # prob_volume = self.final_layer(output) #LaplaceDisp2Prob(depth_values, depth, variance).getProb()
         return prob_volume.unsqueeze(1) # output
 
 
@@ -731,23 +734,23 @@ class AxisAlignedConvGaussian(nn.Module):
         latent_mu, latent_sigma = self.encoder(inputs)
 
         # We only want the mean of the resulting hxw image
-        latent_mu = torch.mean(latent_mu, dim=2, keepdim=True)
-        latent_mu = torch.mean(latent_mu, dim=3, keepdim=True)
-        latent_sigma = torch.mean(latent_sigma, dim=2, keepdim=True)
-        latent_sigma = torch.mean(latent_sigma, dim=3, keepdim=True)
+        # latent_mu = torch.mean(latent_mu, dim=2, keepdim=True)
+        # latent_mu = torch.mean(latent_mu, dim=3, keepdim=True)
+        # latent_sigma = torch.mean(latent_sigma, dim=2, keepdim=True)
+        # latent_sigma = torch.mean(latent_sigma, dim=3, keepdim=True)
 
         # Convert encoding to 2 x latent dim and split up for mu and log_sigma
         mu = self.fc_mu(latent_mu)
         sigma = self.fc_sigma(latent_sigma)
 
-        mu = mu.squeeze(3).squeeze(2)
-        sigma = sigma.squeeze(3).squeeze(2)
+        # mu = mu.squeeze(3).squeeze(2)
+        # sigma = sigma.squeeze(3).squeeze(2)
         # mu = mu.permute(0, 2, 3, 1)
         # log_sigma = log_sigma.permute(0, 2, 3, 1)
 
         # This is a multivariate normal with diagonal covariance matrix sigma
         # https://github.com/pytorch/pytorch/pull/11178
-        dist = Independent(Normal(loc=mu, scale=sigma), 1)
+        dist = Independent(Normal(loc=mu, scale=sigma), 3)
         return dist
 
 
@@ -783,14 +786,14 @@ class GenerationNet(nn.Module):
         self.posterior_latent_space = None
         self.prior_latent_space = None
 
-    def forward(self, img_feature, costvol, gt_costvol=None, training=True): #img, prior_depth, conf, gt_depth=None, gt_conf=None, training=True):
+    def forward(self, img_feature, prior_depth, conf, gt_depth=None, gt_conf=None, training=True):
         """
         Construct prior latent space for patch and run patch through UNet,
         in case training is True also construct posterior latent space
         """
         if training:
-            self.posterior_latent_space = self.posterior.forward(torch.cat((img_feature, gt_costvol), dim=1)) #torch.cat((img, gt_depth, gt_conf), dim=1))
-        self.prior_latent_space = self.prior.forward(torch.cat((img_feature, costvol), dim=1)) #torch.cat((img, prior_depth, conf), dim=1))
+            self.posterior_latent_space = self.posterior.forward(torch.cat((img_feature, gt_depth, gt_conf), dim=1))
+        self.prior_latent_space = self.prior.forward(torch.cat((img_feature, prior_depth, conf), dim=1))
         # self.unet_features = self.unet.forward(patch, False)
 
     def sample(self, testing=False, depth_values=None, variance=None, num_samples=1):
@@ -801,7 +804,7 @@ class GenerationNet(nn.Module):
         if not testing:
             z_prior = self.prior_latent_space.rsample()
             self.z_prior_sample = z_prior
-            cost_volume = self.generator.forward(z_prior.permute(0, 3, 1, 2), depth_values, variance)
+            cost_volume = self.generator.forward(z_prior, depth_values, variance)
         else:
             # You can choose whether you mean a sample or the mean here. For the GED it is important to take a sample.
             # z_prior = self.prior_latent_space.base_dist.loc
@@ -809,9 +812,9 @@ class GenerationNet(nn.Module):
             for _ in range(num_samples):
                 z_prior = self.prior_latent_space.sample()
                 # self.z_prior_sample = z_prior
-                cost_volume.append(self.generator.forward(z_prior.permute(0, 3, 1, 2), depth_values, variance))
+                cost_volume.append(self.generator.forward(z_prior, depth_values, variance))
             cost_volume = torch.cat(cost_volume, dim=1)
-        return cost_volume #self.generator.forward(z_prior.permute(0, 3, 1, 2), depth_values, variance)
+        return cost_volume.mean(dim=1, keepdim=True) #self.generator.forward(z_prior.permute(0, 3, 1, 2), depth_values, variance)
 
     def reconstruct(self, use_posterior_mean=False, calculate_posterior=True, z_posterior=None, depth_values=None, variance=None):
         """
@@ -825,7 +828,7 @@ class GenerationNet(nn.Module):
             if calculate_posterior:
                 z_posterior = self.posterior_latent_space.rsample()
         # print(z_posterior.size())
-        return self.generator.forward(z_posterior.permute(0, 3, 1, 2), depth_values, variance)
+        return self.generator.forward(z_posterior, depth_values, variance)
 
     def kl_divergence(self, analytic=True, calculate_posterior=False, z_posterior=None):
         """

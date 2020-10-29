@@ -257,10 +257,10 @@ class CascadeMVSNet(nn.Module):
                 prev_depth, prev_cfd = prev_costvol_stage
                 warped_depth, warped_cfd = homo_warping_2D(prev_depth.unsqueeze(1), prev_cfd.unsqueeze(1),
                                                            prev_ref_matrix, cur_ref_proj)
-                var = (1 - warped_cfd)*100 + self.depth_interals_ratio[stage_idx]*depth_interval
+                # var = (1 - warped_cfd)*100 + self.depth_interals_ratio[stage_idx]*depth_interval
                 #print(warped_cfd.min().item(), warped_cfd.max().item())
                 #print(var.min().item(), var.max().item())
-                warped_costvol = LaplaceDisp2Prob(depth_values_stage, warped_depth, variance=var).getProb()
+                # warped_costvol = LaplaceDisp2Prob(depth_values_stage, warped_depth, variance=var).getProb()
                 if is_begin.sum() > 0:
                     #var = outputs["stage{}".format(stage_idx)]["photometric_confidence"].detach()[is_begin]
                     #var = F.interpolate(var.unsqueeze(1), [img.shape[2], img.shape[3]], mode='bilinear', align_corners=Align_Corners_Range)
@@ -282,7 +282,7 @@ class CascadeMVSNet(nn.Module):
                     gt_costvol = OneHotDisp2Prob(depth_values_stage, gt_depth_stage, variance=self.depth_interals_ratio[stage_idx]*depth_interval).getProb()
                     self.cvae(feature_img, warped_costvol, gt_costvol) #warped_depth / 1000, warped_cfd, gt_depth * gt_mask / 1000, gt_mask)
                     recons_vol, kl_term = self.cvae.elbo() #depth_values=depth_values_stage/1000, variance=1000)
-                    recons_vol = recons_vol.repeat(1, self.cr_base_chs[stage_idx], 1, 1, 1)
+                    # recons_vol = recons_vol.repeat(1, self.cr_base_chs[stage_idx], 1, 1, 1)
                     # reg_term = l2_regularisation(self.cvae.prior) + l2_regularisation(self.cvae.posterior) + l2_regularisation(self.cvae.generator)
                     outputs_stage['kl'] = kl_term
                 else:
