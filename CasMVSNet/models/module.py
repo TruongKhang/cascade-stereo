@@ -595,19 +595,19 @@ class Encoder(nn.Module):
         self.input_channels = input_channels
         self.num_filters = num_filters
 
-        self.dc_feature = nn.Sequential(nn.Conv2d(self.input_channels[0], 16, kernel_size=3, padding=1),
+        self.dc_feature = nn.Sequential(nn.Conv2d(self.input_channels[0], 8, kernel_size=3, padding=1),
                                         nn.ReLU())
-        self.img_feature = nn.Sequential(nn.Conv2d(self.input_channels[1], 16, kernel_size=3, padding=1),
+        self.img_feature = nn.Sequential(nn.Conv2d(self.input_channels[1], 8, kernel_size=3, padding=1),
                                          nn.ReLU())
 
         layers = []
-        output_dim = 32
+        output_dim = 16
         for i in range(len(self.num_filters[:-1])):
             """
             Determine input_dim and output_dim of conv layers in this block. The first layer is input x output,
             All the subsequent layers are output x output.
             """
-            input_dim = 32 if i == 0 else output_dim
+            input_dim = 16 if i == 0 else output_dim
             output_dim = num_filters[i]
 
             if i != 0:
@@ -792,8 +792,8 @@ class GenerationNet(nn.Module):
         in case training is True also construct posterior latent space
         """
         if training:
-            self.posterior_latent_space = self.posterior.forward(torch.cat((img_feature, gt_depth, gt_conf), dim=1))
-        self.prior_latent_space = self.prior.forward(torch.cat((img_feature, prior_depth, conf), dim=1))
+            self.posterior_latent_space = self.posterior.forward((torch.cat((gt_depth, gt_conf), dim=1), img_feature))
+        self.prior_latent_space = self.prior.forward((torch.cat((prior_depth, conf), dim=1), img_feature))
         # self.unet_features = self.unet.forward(patch, False)
 
     def sample(self, testing=False, depth_values=None, variance=None, num_samples=1):
