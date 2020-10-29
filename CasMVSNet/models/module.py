@@ -684,7 +684,7 @@ class Decoder(nn.Module):
                            #              nn.Softmax(dim=1))
         # self.variance = nn.Conv2d(output_dim, self.num_filters[-1], 1)
         self.to_volume = nn.Sequential(nn.Conv2d(self.num_filters[-1], self.num_filters[-1], kernel_size=1),
-                                       nn.Softmax())
+                                       nn.Softmax(dim=1))
 
         self.layers = nn.Sequential(*layers)
 
@@ -726,8 +726,8 @@ class AxisAlignedConvGaussian(nn.Module):
 
         nn.init.kaiming_normal_(self.fc_mu.weight, mode='fan_in', nonlinearity='relu')
         nn.init.normal_(self.fc_mu.bias)
-        nn.init.kaiming_normal_(self.fc_sigma.weight)
-        nn.init.normal_(self.fc_sigma.bias)
+        # nn.init.kaiming_normal_(self.fc_sigma.weight)
+        # nn.init.normal_(self.fc_sigma.bias)
 
     def forward(self, inputs): #, conf=None):
 
